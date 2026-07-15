@@ -1,7 +1,8 @@
 """Guest-cart operations — one Magento guest cart per user.
 
 Guest carts are anonymous (no auth). We lazily create a cart on first add and
-remember its masked id per user. Cloudflare requires a browser User-Agent.
+persist its masked id on the user's doc (users.cart_id) so the cart survives
+backend restarts and login/logout. Cloudflare requires a browser User-Agent.
 """
 import json
 import urllib.error
@@ -9,6 +10,7 @@ import urllib.request
 
 from commerce.magento import fetch_images_by_sku
 from core import config
+from db import users as users_db
 
 _API = config.MAGENTO_BASE_URL.rstrip("/")
 _UA = {
@@ -16,7 +18,6 @@ _UA = {
     "Accept": "application/json",
     "User-Agent": "Mozilla/5.0",
 }
-_carts: dict[str, str] = {}  # username -> guest cart (masked) id
 _FALLBACK_CCY = "BD"
 
 
@@ -39,10 +40,10 @@ def empty() -> dict:
 
 
 def _cart_id(username: str, create: bool = False) -> str | None:
-    cid = _carts.get(username)
+    cid = users_db.get_cart_id(username)
     if cid is None and create:
         cid = _call("POST", "/guest-carts")
-        _carts[username] = cid
+        users_db.set_cart_id(username, cid)
     return cid
 
 
@@ -52,6 +53,10 @@ def add_item(username: str, sku: str, qty: int = 1) -> dict:
     try:
         _call("POST", f"/guest-carts/{cid}/items", body)
     except urllib.error.HTTPError as e:
+        # ponytail: no self-heal on a dead/expired guest cart — Magento returns 404
+        # for BOTH "cart gone" and "bad SKU", so a re-mint heuristic would wipe a
+        # live cart on a typo. If persisted carts start expiring in practice, detect
+        # cart-not-found by message text ("cartId") and re-mint only then.
         return {"ok": False, "error": _err(e), "cart": view(username)}
     return {"ok": True, "cart": view(username)}
 

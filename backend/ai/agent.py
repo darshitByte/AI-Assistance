@@ -16,6 +16,7 @@ from langgraph.checkpoint.memory import InMemorySaver
 
 from ai.runtime import runtime
 from commerce import cart as cartmod
+from commerce import magento_token
 from core import config
 from core.log import logger
 from prompts.system import SYSTEM_PROMPT
@@ -45,6 +46,63 @@ def remove_from_cart(item_id: int, runtime: ToolRuntime[UserContext]) -> str:
     return json.dumps(cartmod.remove_item(runtime.context.username, item_id))
 
 
+@tool
+async def browse_kinds(query: str) -> str:
+    """Peek at what KINDS of a product actually exist in the store (real brands /
+    types / variants) as plain text, WITHOUT showing any product cards. Call this
+    before asking the customer a narrowing question so the options you offer are
+    real — never invent examples. Returns distinct product names, or says nothing
+    matched. This does NOT render cards, so use it freely to look before you ask."""
+    try:
+        res = await runtime.mcp.session.call_tool(
+            "search_products", {"query": query, "page_size": 25}
+        )
+    except Exception as e:  # noqa: BLE001 — never let a lookup crash the turn
+        return f"[browse error] {e}"
+    text = "".join(getattr(b, "text", "") for b in (res.content or []))
+    try:
+        items = json.loads(text).get("items", [])
+    except (json.JSONDecodeError, AttributeError, TypeError):
+        return "no matches found"
+    names = list(dict.fromkeys(it.get("name") for it in items if it.get("name")))[:20]
+    return "; ".join(names) if names else "no matches found"
+
+
+@tool
+async def search_within_budget(
+    query: str, max_price: float | None = None, min_price: float | None = None
+) -> str:
+    """Search by name AND price together. Use this whenever the customer gives a
+    keyword plus a price limit (e.g. "mops under 300", "snacks between 50 and 100").
+    Prices are in the store currency (BD). It name-searches first, then keeps only
+    the products within budget — so results genuinely match the keyword AND the
+    price, unlike filtering by price alone. Renders product cards."""
+    try:
+        res = await runtime.mcp.session.call_tool(
+            "search_products", {"query": query, "page_size": 100}
+        )
+    except Exception as e:  # noqa: BLE001 — never crash the turn
+        return f"[search error] {e}"
+    text = "".join(getattr(b, "text", "") for b in (res.content or []))
+    try:
+        items = json.loads(text).get("items", [])
+    except (json.JSONDecodeError, AttributeError, TypeError):
+        return json.dumps({"items": []})
+
+    def in_budget(it) -> bool:
+        try:
+            price = float(it.get("price"))
+        except (TypeError, ValueError):
+            return False  # no usable price → can't promise it's within budget
+        if min_price is not None and price < min_price:
+            return False
+        if max_price is not None and price > max_price:
+            return False
+        return True
+
+    return json.dumps({"items": [it for it in items if in_budget(it)]})
+
+
 CART_TOOLS = [add_to_cart, view_cart, remove_from_cart]
 
 
@@ -69,6 +127,22 @@ def _resilient(t):
 _agent = None
 
 
+def reset_agent() -> None:
+    """Drop the cached agent so the next get_agent() rebuilds against a fresh MCP
+    session (its tools are bound to whatever session existed at build time)."""
+    global _agent
+    _agent = None
+
+
+async def ensure_fresh_mcp() -> None:
+    """Before a turn: if the admin token is stale, re-mint it, respawn the MCP
+    server with the new token, and force an agent rebuild."""
+    if magento_token.is_stale():
+        magento_token.get_token(force=True)
+        await runtime.mcp.reconnect(magento_token.mcp_env())
+        reset_agent()
+
+
 async def get_agent():
     """Lazily build the agent on first use, then reuse the same instance."""
     global _agent
@@ -80,13 +154,12 @@ async def get_agent():
             temperature=1,
             top_p=0.95,
             max_tokens=16384,
-            extra_body={
-                "chat_template_kwargs": {"enable_thinking": True},
-                "reasoning_budget": 16384,
-            },
+            # gpt-oss reasons in a separate channel (not content), so no leak;
+            # "low" keeps replies fast while still driving tool calls reliably.
+            extra_body={"reasoning_effort": "low"},
         )
         mcp_tools = [_resilient(t) for t in await load_mcp_tools(runtime.mcp.session)]
-        tools = mcp_tools + CART_TOOLS
+        tools = mcp_tools + CART_TOOLS + [browse_kinds, search_within_budget]
         _agent = create_agent(
             model,
             tools=tools,

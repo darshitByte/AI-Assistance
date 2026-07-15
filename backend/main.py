@@ -11,6 +11,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from ai.mcp_client import MCPClient
 from ai.runtime import runtime
 from api import auth, cart, chat, health, session
+from commerce import magento_token
 from core import config
 from core.log import logger
 from db import users
@@ -18,7 +19,7 @@ from db import users
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    mcp = MCPClient(config.MCP_COMMAND, config.MCP_ARGS, config.MCP_ENV)
+    mcp = MCPClient(config.MCP_COMMAND, config.MCP_ARGS, magento_token.mcp_env())
     await mcp.connect()
     runtime.mcp = mcp
     users.seed_admin()

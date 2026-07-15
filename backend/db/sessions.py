@@ -52,6 +52,13 @@ def touch(username: str, session_id: str) -> None:
         logger.warning("session touch failed: %s", e)
 
 
+def delete_session(username: str, session_id: str) -> None:
+    try:
+        sessions.delete_one({"username": username, "session_id": session_id})
+    except Exception as e:  # noqa: BLE001
+        logger.warning("session delete failed: %s", e)
+
+
 def list_sessions(username: str, limit: int = 100) -> list[dict]:
     docs = (
         sessions.find({"username": username}, {"_id": 0, "username": 0})

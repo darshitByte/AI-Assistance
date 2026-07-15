@@ -99,6 +99,13 @@ export default function App() {
     setSessionsOpen(false);
   }
 
+  function deleteChat(id) {
+    if (loading) return;
+    setSessions((ss) => ss.filter((s) => s.session_id !== id)); // optimistic
+    authFetch(`/sessions/${id}`, { method: "DELETE" }).catch(refreshSessions);
+    if (id === sessionId) newSession(); // deleted the open chat → start a fresh one
+  }
+
   useEffect(() => {
     if (!token) return;
     (async () => {
@@ -167,7 +174,7 @@ export default function App() {
       const data = await res.json();
       setMessages((m) => [
         ...m,
-        { role: "bot", text: data.reply || "No reply.", products: data.products || [] },
+        { role: "bot", text: data.reply || "No reply.", products: data.products || [], cartAdded: data.cart_added },
       ]);
       if (data.cart) setCart(data.cart);
       refreshSessions(); // first message may have just AI-named this chat
@@ -181,18 +188,31 @@ export default function App() {
     }
   }
 
-  async function addToCart(sku) {
+  async function addToCart(sku, qty = 1, name) {
     try {
       const res = await authFetch("/cart/add", {
         method: "POST",
-        body: JSON.stringify({ sku, qty: 1 }),
+        body: JSON.stringify({ sku, qty }),
       });
       const data = await res.json();
       if (data.cart) setCart(data.cart);
+      // Card-button adds bypass the LLM, so nudge with the same next-step buttons.
+      if (data.ok) {
+        setMessages((m) => [
+          ...m,
+          { role: "bot", text: `✅ Added ${qty} × ${name || sku} to your cart. What would you like next?`, cartAdded: true },
+        ]);
+      }
       return data.ok;
     } catch {
       return false;
     }
+  }
+
+  // A next-step button was clicked: just append the reply. Buttons stay put
+  // (visibility is driven by the message's cartAdded flag, which we leave on).
+  function replyToAction(reply) {
+    setMessages((m) => [...m, { role: "bot", text: reply }]);
   }
 
   async function removeFromCart(itemId) {
@@ -213,10 +233,9 @@ export default function App() {
   const showChips = messages.length <= 1 && !loading;
 
   return (
-    <div className="shell">
-      <div className="grain" aria-hidden="true" />
-
+    <div className="app">
       <header className="topbar">
+        <div className="topbar__inner">
         <div className="brand">
           <span className="brand__mark" aria-hidden="true">🧺</span>
           <span className="brand__name">Grocerzy</span>
@@ -260,12 +279,22 @@ export default function App() {
             </div>
           </div>
         </div>
+        </div>
       </header>
+
+      <div className="shell">
+      <div className="grain" aria-hidden="true" />
 
       <main className={`log ${showChips ? "log--intro" : ""}`} ref={logRef}>
         <div className="thread">
           {messages.map((m, i) => (
-            <Message key={i} {...m} onAdd={addToCart} />
+            <Message
+              key={i}
+              {...m}
+              onAdd={addToCart}
+              onContinue={() => replyToAction("What else would you like to add? 🛍️")}
+              onCheckout={() => replyToAction("Checkout is coming soon 🛒")}
+            />
           ))}
           {loading && (
             <div className="row row--bot">
@@ -322,12 +351,14 @@ export default function App() {
         onClose={() => setSessionsOpen(false)}
         onPick={switchSession}
         onNew={newChat}
+        onDelete={deleteChat}
       />
+      </div>
     </div>
   );
 }
 
-function SessionsPanel({ sessions, activeId, open, onClose, onPick, onNew }) {
+function SessionsPanel({ sessions, activeId, open, onClose, onPick, onNew, onDelete }) {
   return (
     <>
       <div className={`overlay ${open ? "overlay--on" : ""}`} onClick={onClose} />
@@ -342,14 +373,26 @@ function SessionsPanel({ sessions, activeId, open, onClose, onPick, onNew }) {
             <p className="muted" style={{ padding: "8px 12px" }}>No chats yet.</p>
           ) : (
             sessions.map((s) => (
-              <button
+              <div
                 key={s.session_id}
                 className={`sessitem ${s.session_id === activeId ? "sessitem--active" : ""}`}
-                onClick={() => onPick(s.session_id)}
-                title={s.session_name}
               >
-                {s.session_name || "New chat"}
-              </button>
+                <button
+                  className="sessitem__name"
+                  onClick={() => onPick(s.session_id)}
+                  title={s.session_name}
+                >
+                  {s.session_name || "New chat"}
+                </button>
+                <button
+                  className="sessitem__del"
+                  onClick={() => onDelete(s.session_id)}
+                  aria-label="Delete chat"
+                  title="Delete chat"
+                >
+                  🗑
+                </button>
+              </div>
             ))
           )}
         </div>
@@ -411,7 +454,7 @@ function CartPanel({ cart, open, onClose, onRemove }) {
   );
 }
 
-function Message({ role, text, products, onAdd }) {
+function Message({ role, text, products, onAdd, cartAdded, onContinue, onCheckout }) {
   return (
     <div className={`row row--${role}`}>
       <Avatar role={role} />
@@ -421,6 +464,16 @@ function Message({ role, text, products, onAdd }) {
             <div className="md">
               <ReactMarkdown remarkPlugins={[remarkGfm]}>{text}</ReactMarkdown>
             </div>
+            {cartAdded && (
+              <div className="msg-actions">
+                <button className="msg-actions__btn" onClick={onContinue}>
+                  🛍️ Continue shopping
+                </button>
+                <button className="msg-actions__btn msg-actions__btn--primary" onClick={onCheckout}>
+                  Proceed to checkout →
+                </button>
+              </div>
+            )}
             {products?.length > 0 && (
               <div className="cards">
                 {products.map((p) => (
@@ -439,14 +492,15 @@ function Message({ role, text, products, onAdd }) {
 
 function ProductCard({ product, onAdd }) {
   const [broken, setBroken] = useState(false);
-  const [state, setState] = useState("idle");
+  const [state, setState] = useState("idle"); // idle | selecting | adding | added
+  const [qty, setQty] = useState(1);
   const price = product.price != null ? money(product.price) : "—";
 
   async function handleAdd() {
     setState("adding");
-    const ok = await onAdd(product.sku);
-    setState(ok ? "added" : "idle");
-    if (ok) setTimeout(() => setState("idle"), 1600);
+    const ok = await onAdd(product.sku, qty, product.name);
+    setState(ok ? "added" : "selecting");
+    if (ok) setTimeout(() => { setState("idle"); setQty(1); }, 1600);
   }
 
   return (
@@ -469,13 +523,46 @@ function ProductCard({ product, onAdd }) {
           <span className="card__price">{price}</span>
           <span className="card__sku">{product.sku}</span>
         </div>
-        <button
-          className={`card__add card__add--${state}`}
-          onClick={handleAdd}
-          disabled={state === "adding"}
-        >
-          {state === "added" ? "✓ Added" : state === "adding" ? "…" : "＋ Add"}
-        </button>
+        {state === "idle" ? (
+          <button className="card__add" onClick={() => setState("selecting")}>
+            ＋ Add
+          </button>
+        ) : (
+          <>
+            {(state === "selecting" || state === "adding") && (
+              <div className="card__qty">
+                <button
+                  className="card__qty-btn"
+                  onClick={() => setQty((q) => Math.max(1, q - 1))}
+                  disabled={qty <= 1 || state === "adding"}
+                  aria-label="Decrease quantity"
+                >
+                  −
+                </button>
+                <span className="card__qty-num">{qty}</span>
+                <button
+                  className="card__qty-btn"
+                  onClick={() => setQty((q) => q + 1)}
+                  disabled={state === "adding"}
+                  aria-label="Increase quantity"
+                >
+                  ＋
+                </button>
+              </div>
+            )}
+            <button
+              className={`card__add card__add--${state}`}
+              onClick={handleAdd}
+              disabled={state === "adding"}
+            >
+              {state === "added"
+                ? "✓ Added"
+                : state === "adding"
+                ? "Adding…"
+                : `Add ${qty} to cart`}
+            </button>
+          </>
+        )}
       </div>
     </article>
   );

@@ -1,7 +1,7 @@
 """Thin async client for a stdio MCP server (the Bold magento2-mcp Node server).
 
-Commerce Connector boundary: the AI layer only calls list_openai_tools() /
-call_tool(), so swapping platforms later means changing config, not this code.
+Owns the Node subprocess and exposes the live MCP session; the agent adapts the
+session's tools via langchain's load_mcp_tools.
 """
 from contextlib import AsyncExitStack
 
@@ -23,35 +23,17 @@ class MCPClient:
         await self.session.initialize()
         self._tools = (await self.session.list_tools()).tools
 
-    def list_openai_tools(self) -> list[dict]:
-        return [
-            {
-                "type": "function",
-                "function": {
-                    "name": t.name,
-                    "description": t.description or "",
-                    "parameters": t.inputSchema,
-                },
-            }
-            for t in self._tools
-        ]
+    async def reconnect(self, env: dict[str, str]) -> None:
+        """Respawn the subprocess with a new env (the Node server reads the token
+        once at spawn, so a refreshed token needs a fresh process)."""
+        await self.close()
+        self._params = StdioServerParameters(
+            command=self._params.command, args=self._params.args, env=env
+        )
+        await self.connect()
 
     def tool_names(self) -> list[str]:
         return [t.name for t in self._tools]
-
-    async def call_tool(self, name: str, arguments: dict) -> str:
-        # Never raise into the chat loop: bad/missing args or server errors are
-        # returned as a tool_result so the model can see the problem and retry.
-        try:
-            result = await self.session.call_tool(name, arguments)
-        except Exception as e:  # noqa: BLE001 — surface any MCP error to the model
-            return f"[tool error] {e}"
-        text = "\n".join(
-            block.text for block in result.content if getattr(block, "type", None) == "text"
-        )
-        if result.isError:
-            return f"[tool error] {text or 'unknown error'}"
-        return text or "[no content returned]"
 
     async def close(self) -> None:
         if self._stack is not None:

@@ -44,6 +44,18 @@ def verify(username: str, password: str) -> bool:
     return ok
 
 
+def get_cart_id(username: str) -> str | None:
+    u = users.find_one({"username": username.strip()}, {"cart_id": 1})
+    return u.get("cart_id") if u else None
+
+
+def set_cart_id(username: str, cart_id: str | None) -> None:
+    users.update_one(
+        {"username": username.strip()},
+        {"$set": {"cart_id": cart_id, "updated_at": _now()}},
+    )
+
+
 def seed_admin() -> None:
     """Ensure the default admin user exists."""
     try:

@@ -22,6 +22,13 @@ def save_message(username: str, session_id: str, role: str, content: str) -> Non
         logger.warning("message save failed: %s", e)
 
 
+def delete_messages(username: str, session_id: str) -> None:
+    try:
+        messages.delete_many({"username": username, "session_id": session_id})
+    except Exception as e:  # noqa: BLE001
+        logger.warning("message delete failed: %s", e)
+
+
 def has_messages(username: str, session_id: str) -> bool:
     return messages.count_documents({"username": username, "session_id": session_id}, limit=1) > 0
 

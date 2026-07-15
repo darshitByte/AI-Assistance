@@ -49,20 +49,17 @@ backend/
 
 ## Setup
 
+The Docker build installs the Python and Node (MCP server) dependencies itself —
+you only need a filled-in `.env`:
+
 ```bash
-# 1. Node deps for the MCP server (already installed if you cloned via setup)
-cd mcp-servers/magento2-mcp && npm install && cd ../..
-
-# 2. Python env
-python3 -m venv .venv
-.venv/bin/pip install -r backend/requirements.txt
-
-# 3. Credentials
-cp .env.example .env    # then fill in ANTHROPIC_API_KEY + Magento URL/token
+cp .env.example .env    # then fill in the values below
 ```
 
-`MAGENTO_BASE_URL` **must** include the `/rest/V1` suffix. The Magento token is a
-Magento admin **integration** token (Admin → System → Integrations).
+- `NVIDIA_API_KEY` — LLM provider key (NVIDIA-hosted Nemotron).
+- `MAGENTO_BASE_URL` — **must** include the `/rest/V1` suffix.
+- `MAGENTO_ADMIN_USER` / `MAGENTO_ADMIN_PASSWORD` — admin login. The backend mints
+  the Magento token on demand and refreshes it automatically (no manual token).
 
 ## Run with Docker (three containers)
 
@@ -85,27 +82,10 @@ injected at runtime (not baked into the image). To change where the browser
 calls the API, set the `VITE_API_BASE` build arg in `docker-compose.yml`.
 Stop with `docker compose down`.
 
-## Run locally without Docker (optional — for hot-reload dev)
-
-Needs a local MongoDB (or point `MONGO_URL` at the Docker one) and the Python venv
-(`python3 -m venv .venv && .venv/bin/pip install -r backend/requirements.txt`).
-
-```bash
-# Terminal 1 — backend API on http://127.0.0.1:8000
-.venv/bin/python -m uvicorn main:app --app-dir backend --reload
-
-# Terminal 2 — React frontend on http://127.0.0.1:3000
-cd frontend && npm install && npm run dev
-```
-
-Then open **http://127.0.0.1:3000**.
-
-- `GET http://127.0.0.1:8000/health` lists the model and MCP tools.
-- Bridge-only smoke test (no creds): `.venv/bin/python backend/smoke_test.py`
-- Frontend talks to the backend via `VITE_API_BASE` (defaults to `http://127.0.0.1:8000`; see `frontend/src/config.js`).
+`GET http://localhost:8000/health` lists the model and MCP tools.
 
 ## Notes
 
 - Bold's MCP is **admin-token** auth and covers **search + analytics only**. It's a
   fine fit for the search leg; the full purchase flow will need our own MCP tools.
-- Model defaults to `claude-opus-4-8`; change `ANTHROPIC_MODEL` in `.env`.
+- Model is NVIDIA-hosted Nemotron; change `NVIDIA_MODEL` in `.env`.

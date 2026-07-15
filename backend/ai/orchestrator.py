@@ -8,19 +8,25 @@ return a fresh cart snapshot.
 import asyncio
 import json
 
-from ai.agent import UserContext, get_agent
+from ai.agent import UserContext, ensure_fresh_mcp, get_agent
 from commerce import cart as cartmod
 from commerce.magento import fetch_images_by_sku
 
-SEARCH_TOOLS = {"search_products", "advanced_product_search"}
+# Tools whose output we harvest into product cards: catalogue searches (many
+# items) plus single-product detail lookups (one flat object).
+SEARCH_TOOLS = {"search_products", "advanced_product_search",
+                "get_product_by_sku", "get_product_by_id",
+                "search_within_budget"}
 MAX_CARDS = 8
 
 
 async def run_turn(username: str, user_message: str, session_id: str) -> dict:
     """Run one turn for a user's chat session. Returns {reply, products, cart}."""
+    await ensure_fresh_mcp()  # re-mint the Magento token + respawn MCP if expired
     agent = await get_agent()
     collected: dict[str, dict] = {}
     reply = "I wasn't able to finish that — could you try rephrasing?"
+    cart_added = False  # did an add_to_cart run this turn? → UI shows next-step buttons
 
     async for update in agent.astream(
         {"messages": [{"role": "user", "content": user_message}]},
@@ -34,11 +40,14 @@ async def run_turn(username: str, user_message: str, session_id: str) -> dict:
                 mtype = getattr(msg, "type", None)
                 if mtype == "tool" and getattr(msg, "name", None) in SEARCH_TOOLS:
                     _collect_products(_text(msg.content), collected)
+                elif mtype == "tool" and getattr(msg, "name", None) == "add_to_cart":
+                    cart_added = True
                 elif mtype == "ai" and msg.content and not getattr(msg, "tool_calls", None):
                     reply = _text(msg.content).strip()
 
     cart = await asyncio.to_thread(cartmod.view, username)
-    return {"reply": reply, "products": await _enrich(collected), "cart": cart}
+    return {"reply": reply, "products": await _enrich(collected),
+            "cart": cart, "cart_added": cart_added}
 
 
 def _text(content) -> str:
@@ -55,7 +64,10 @@ def _collect_products(tool_output: str, collected: dict[str, dict]) -> None:
         data = json.loads(tool_output)
     except (json.JSONDecodeError, TypeError):
         return
-    items = data.get("items", []) if isinstance(data, dict) else []
+    if not isinstance(data, dict):
+        return
+    # search tools return {"items": [...]}; detail tools return one flat product.
+    items = data.get("items", []) if "items" in data else [data]
     for it in items:
         sku = it.get("sku")
         if not sku or sku in collected or it.get("type_id") == "configurable":

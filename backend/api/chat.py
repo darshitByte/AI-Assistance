@@ -30,6 +30,7 @@ class ChatResponse(BaseModel):
     reply: str
     products: list[Product] = []
     cart: dict = {}
+    cart_added: bool = False  # → UI shows "keep shopping / checkout" buttons
 
 
 @router.post("/chat", response_model=ChatResponse)
@@ -51,7 +52,8 @@ async def chat(req: ChatRequest, user: str = Depends(current_user)):
         "CHAT reply user=%s len=%d products=%d cart_items=%d",
         user, len(result["reply"]), len(result["products"]), result["cart"].get("items_qty", 0),
     )
-    return ChatResponse(reply=result["reply"], products=result["products"], cart=result["cart"])
+    return ChatResponse(reply=result["reply"], products=result["products"],
+                        cart=result["cart"], cart_added=result["cart_added"])
 
 
 @router.get("/allmessage")

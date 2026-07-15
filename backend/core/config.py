@@ -15,7 +15,12 @@ LLM_MODEL = os.getenv("NVIDIA_MODEL", "nvidia/nemotron-3-super-120b-a12b")
 
 # --- Magento / MCP ---
 MAGENTO_BASE_URL = os.getenv("MAGENTO_BASE_URL", "")
-MAGENTO_API_TOKEN = os.getenv("MAGENTO_API_TOKEN", "")
+MAGENTO_API_TOKEN = os.getenv("MAGENTO_API_TOKEN", "")  # legacy static token (smoke_test only)
+# Admin creds → mint a fresh token on demand (admin JWTs expire ~hourly).
+MAGENTO_ADMIN_USER = os.getenv("MAGENTO_ADMIN_USER", "")
+MAGENTO_ADMIN_PASSWORD = os.getenv("MAGENTO_ADMIN_PASSWORD", "")
+# Re-mint once the cached token is older than this (safely under the ~1h lifetime).
+MAGENTO_AUTH_TTL = int(os.getenv("MAGENTO_AUTH_TTL", "2700"))
 
 MCP_SERVER_PATH = PROJECT_ROOT / "mcp-servers" / "magento2-mcp" / "mcp-server.js"
 MCP_COMMAND = "node"
