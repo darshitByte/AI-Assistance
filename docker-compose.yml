@@ -1,0 +1,40 @@
+services:
+  mongo:
+    image: mongo:7
+    volumes:
+      - mongo-data:/data/db
+    ports:
+      - "27017:27017"
+    restart: unless-stopped
+
+  backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    image: grocerzy-backend
+    env_file: .env          # NVIDIA + Magento creds injected at runtime
+    environment:
+      # Reach the Mongo container by service name (overrides .env for Docker).
+      MONGO_URL: mongodb://mongo:27017
+    ports:
+      - "8000:8000"
+    depends_on:
+      - mongo
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        # Where the browser reaches the backend (published port on the host).
+        VITE_API_BASE: http://localhost:8000
+    image: grocerzy-frontend
+    ports:
+      - "3000:80"
+    depends_on:
+      - backend
+    restart: unless-stopped
+
+volumes:
+  mongo-data:
