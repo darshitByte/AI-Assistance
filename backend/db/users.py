@@ -44,16 +44,53 @@ def verify(username: str, password: str) -> bool:
     return ok
 
 
-def get_cart_id(username: str) -> str | None:
-    u = users.find_one({"username": username.strip()}, {"cart_id": 1})
-    return u.get("cart_id") if u else None
+def get_address(username: str) -> dict | None:
+    """The *selected* address that checkout.place() bills against (set by quote)."""
+    u = users.find_one({"username": username.strip()}, {"address": 1})
+    return u.get("address") if u else None
 
 
-def set_cart_id(username: str, cart_id: str | None) -> None:
+def set_address(username: str, address: dict) -> None:
     users.update_one(
         {"username": username.strip()},
-        {"$set": {"cart_id": cart_id, "updated_at": _now()}},
+        {"$set": {"address": address, "updated_at": _now()}},
     )
+
+
+def _addresses_from_doc(u: dict | None) -> list[dict]:
+    """Address list from a user doc, falling back to the legacy single `address`."""
+    if not u:
+        return []
+    return u.get("addresses") or ([u["address"]] if u.get("address") else [])
+
+
+def get_addresses(username: str) -> list[dict]:
+    """Saved delivery addresses for the address picker. Falls back to the legacy
+    single `address` (from the retired checkout drawer) so old users aren't empty."""
+    u = users.find_one({"username": username.strip()}, {"addresses": 1, "address": 1})
+    return _addresses_from_doc(u)
+
+
+def add_address(username: str, address: dict) -> list[dict]:
+    """Append an address to the saved list; return the updated list."""
+    users.update_one(
+        {"username": username.strip()},
+        {"$push": {"addresses": address}, "$set": {"updated_at": _now()}},
+    )
+    return get_addresses(username)
+
+
+def add_order(username: str, order_id: int) -> None:
+    users.update_one(
+        {"username": username.strip()},
+        {"$addToSet": {"orders": order_id}, "$set": {"updated_at": _now()}},
+    )
+
+
+def owns_order(username: str, order_id: int) -> bool:
+    """Guard for the invoice PDF endpoint — a user may only fetch their own orders."""
+    u = users.find_one({"username": username.strip()}, {"orders": 1})
+    return bool(u and order_id in (u.get("orders") or []))
 
 
 def seed_admin() -> None:
@@ -63,3 +100,13 @@ def seed_admin() -> None:
         create_user("admin", "admin@123")
     except Exception as e:  # noqa: BLE001 — startup best-effort
         logger.warning("seed_admin skipped: %s", e)
+
+
+if __name__ == "__main__":  # network-free self-check for the address-list fallback
+    assert _addresses_from_doc(None) == []
+    assert _addresses_from_doc({}) == []
+    assert _addresses_from_doc({"address": {"city": "Manama"}}) == [{"city": "Manama"}]
+    assert _addresses_from_doc({"addresses": [{"label": "Home"}]}) == [{"label": "Home"}]
+    # explicit list wins over the legacy single address
+    assert _addresses_from_doc({"addresses": [{"label": "Home"}], "address": {"city": "X"}}) == [{"label": "Home"}]
+    print("users self-check ok")

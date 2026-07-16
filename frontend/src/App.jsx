@@ -13,6 +13,21 @@ const SUGGESTIONS = [
 const money = (n) => `${CURRENCY} ${Number(n || 0).toLocaleString()}`;
 const EMPTY_CART = { items: [], items_qty: 0, grand_total: 0, currency: CURRENCY };
 
+const addrIcon = (label = "") => {
+  const l = label.toLowerCase();
+  if (l.includes("home")) return "🏠";
+  if (l.includes("office") || l.includes("work")) return "🏢";
+  return "📍";
+};
+const payIcon = (code = "") => {
+  const c = code.toLowerCase();
+  if (c.includes("cash") || c.includes("cod")) return "💵";
+  if (c.includes("bank") || c.includes("transfer")) return "🏦";
+  if (c.includes("check")) return "🧾";
+  if (c.includes("paypal")) return "🅿️";
+  return "💳";
+};
+
 export default function App() {
   const [token, setToken] = useState(() => localStorage.getItem("token") || "");
   const [username, setUsername] = useState(() => localStorage.getItem("username") || "");
@@ -31,6 +46,7 @@ export default function App() {
   const [productCount, setProductCount] = useState(null);
   const [cart, setCart] = useState(EMPTY_CART);
   const [cartOpen, setCartOpen] = useState(false);
+  const [pending, setPending] = useState(null); // null | "address" | "payment": in-chat checkout step gating the composer
   const [sessions, setSessions] = useState([]);
   const [sessionsOpen, setSessionsOpen] = useState(false);
   const logRef = useRef(null);
@@ -82,6 +98,7 @@ export default function App() {
     setMessages([]);
     setCart(EMPTY_CART);
     setCartOpen(false);
+    setPending(null);
   }
 
   // New chat: switch to a fresh session; the load effect below registers it,
@@ -215,6 +232,97 @@ export default function App() {
     setMessages((m) => [...m, { role: "bot", text: reply }]);
   }
 
+  const bot = (msg) => setMessages((m) => [...m, { role: "bot", ...msg }]);
+  const user = (text) => setMessages((m) => [...m, { role: "user", text }]);
+  // Lock a resolved picker so its buttons can't be re-triggered from history.
+  const markDone = (idx) => setMessages((m) => m.map((msg, i) => (i === idx ? { ...msg, done: true } : msg)));
+
+  // Step 1 — open the in-chat checkout: show the saved-address picker.
+  async function startCheckout() {
+    if (loading || pending) return;
+    setCartOpen(false);
+    setPending("address");
+    let addresses = [];
+    try {
+      addresses = await authFetch("/checkout/addresses").then((r) => r.json());
+    } catch {
+      /* show the picker empty → Add New still works */
+    }
+    bot({ kind: "addressPicker", addresses, text: "Where should we deliver your order? 📦" });
+  }
+
+  // Step 2 — address chosen: quote shipping, then show the payment picker.
+  async function chooseAddress(addr, idx) {
+    markDone(idx);
+    user(`Deliver to: ${addr.label || addr.city} ${addrIcon(addr.label)}`);
+    setLoading(true);
+    try {
+      const data = await authFetch("/checkout/quote", { method: "POST", body: JSON.stringify(addr) }).then((r) => r.json());
+      if (!data.ok) {
+        bot({ text: data.error || "Couldn't get shipping options." });
+        setPending(null);
+        return;
+      }
+      setPending("payment");
+      bot({
+        kind: "paymentPicker",
+        methods: data.payment_methods || [],
+        total: data.totals?.grand_total ?? null,
+        text: `📍 Delivering to: **${addr.label || addr.city}**\n\nHow would you like to pay?`,
+      });
+    } catch {
+      bot({ text: "Something went wrong getting shipping options." });
+      setPending(null);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  // Add New Address tapped: lock the picker and drop an inline address form.
+  function openAddressForm(idx) {
+    markDone(idx);
+    bot({ kind: "addressForm", text: "Add a new delivery address:" });
+  }
+
+  // Add New Address submitted: persist it, then re-show the picker with the fuller list.
+  async function addAddress(form, idx) {
+    markDone(idx);
+    setLoading(true);
+    try {
+      const addresses = await authFetch("/checkout/addresses", { method: "POST", body: JSON.stringify(form) }).then((r) => r.json());
+      bot({ kind: "addressPicker", addresses, text: "Saved ✅ — where should we deliver?" });
+    } catch {
+      bot({ text: "Couldn't save that address. Please try again." });
+      setPending(null);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  // Step 3 — payment chosen: place the order, drop the confirmation card in chat.
+  async function choosePayment(method, idx) {
+    markDone(idx);
+    user(`Pay with ${method.title || method.code}`);
+    setPending(null);
+    setLoading(true);
+    try {
+      const data = await authFetch("/checkout/place", {
+        method: "POST",
+        body: JSON.stringify({ payment_method_code: method.code }),
+      }).then((r) => r.json());
+      if (!data.ok) {
+        bot({ text: data.error || "Order failed. Please try again." });
+        return;
+      }
+      setCart(EMPTY_CART);
+      bot({ text: "", order: data });
+    } catch {
+      bot({ text: "Order failed. Please try again." });
+    } finally {
+      setLoading(false);
+    }
+  }
+
   async function removeFromCart(itemId) {
     try {
       const res = await authFetch("/cart/remove", {
@@ -290,10 +398,17 @@ export default function App() {
           {messages.map((m, i) => (
             <Message
               key={i}
+              idx={i}
               {...m}
               onAdd={addToCart}
+              authFetch={authFetch}
               onContinue={() => replyToAction("What else would you like to add? 🛍️")}
-              onCheckout={() => replyToAction("Checkout is coming soon 🛒")}
+              onCheckout={startCheckout}
+              onShopAgain={() => setCartOpen(false)}
+              onChooseAddress={chooseAddress}
+              onAddNew={openAddressForm}
+              onSubmitAddress={addAddress}
+              onChoosePayment={choosePayment}
             />
           ))}
           {loading && (
@@ -329,10 +444,11 @@ export default function App() {
           className="composer__input"
           value={input}
           onChange={(e) => setInput(e.target.value)}
-          placeholder="Ask for a product…"
+          placeholder={pending ? "Use the buttons above to continue…" : "Ask for a product…"}
+          disabled={!!pending}
           autoFocus
         />
-        <button className="composer__send" type="submit" disabled={loading || !input.trim()}>
+        <button className="composer__send" type="submit" disabled={loading || !!pending || !input.trim()}>
           {loading ? "…" : "Send"}
         </button>
       </form>
@@ -342,6 +458,7 @@ export default function App() {
         open={cartOpen}
         onClose={() => setCartOpen(false)}
         onRemove={removeFromCart}
+        onCheckout={startCheckout}
       />
 
       <SessionsPanel
@@ -401,7 +518,7 @@ function SessionsPanel({ sessions, activeId, open, onClose, onPick, onNew, onDel
   );
 }
 
-function CartPanel({ cart, open, onClose, onRemove }) {
+function CartPanel({ cart, open, onClose, onRemove, onCheckout }) {
   return (
     <>
       <div className={`overlay ${open ? "overlay--on" : ""}`} onClick={onClose} />
@@ -445,8 +562,12 @@ function CartPanel({ cart, open, onClose, onRemove }) {
             <span>Total</span>
             <strong>{money(cart.grand_total)}</strong>
           </div>
-          <button className="cart__checkout" disabled title="Checkout is coming soon">
-            Checkout — coming soon
+          <button
+            className="cart__checkout"
+            onClick={onCheckout}
+            disabled={cart.items.length === 0}
+          >
+            Proceed to checkout →
           </button>
         </div>
       </aside>
@@ -454,16 +575,32 @@ function CartPanel({ cart, open, onClose, onRemove }) {
   );
 }
 
-function Message({ role, text, products, onAdd, cartAdded, onContinue, onCheckout }) {
+function Message({
+  role, text, products, order, kind, addresses, methods, total, done, idx,
+  onAdd, authFetch, cartAdded, onContinue, onCheckout, onShopAgain,
+  onChooseAddress, onAddNew, onSubmitAddress, onChoosePayment,
+}) {
   return (
     <div className={`row row--${role}`}>
       <Avatar role={role} />
       <div className={`bubble bubble--${role}`}>
         {role === "bot" ? (
           <>
-            <div className="md">
-              <ReactMarkdown remarkPlugins={[remarkGfm]}>{text}</ReactMarkdown>
-            </div>
+            {text && (
+              <div className="md">
+                <ReactMarkdown remarkPlugins={[remarkGfm]}>{text}</ReactMarkdown>
+              </div>
+            )}
+            {kind === "addressPicker" && (
+              <AddressPicker addresses={addresses} done={done} onChoose={(a) => onChooseAddress(a, idx)} onAddNew={() => onAddNew(idx)} />
+            )}
+            {kind === "paymentPicker" && (
+              <PaymentPicker methods={methods} total={total} done={done} onChoose={(mth) => onChoosePayment(mth, idx)} />
+            )}
+            {kind === "addressForm" && (
+              <AddressForm done={done} onSubmit={(f) => onSubmitAddress(f, idx)} />
+            )}
+            {order && <OrderCard order={order} authFetch={authFetch} onShopAgain={onShopAgain} />}
             {cartAdded && (
               <div className="msg-actions">
                 <button className="msg-actions__btn" onClick={onContinue}>
@@ -565,6 +702,120 @@ function ProductCard({ product, onAdd }) {
         )}
       </div>
     </article>
+  );
+}
+
+function OrderCard({ order, authFetch, onShopAgain }) {
+  const [busy, setBusy] = useState(false);
+
+  async function viewInvoice() {
+    setBusy(true);
+    try {
+      const res = await authFetch(`/checkout/invoice/${order.order_id}`);
+      const blob = await res.blob(); // authFetch keeps the JWT in the header; a plain <a> can't
+      window.open(URL.createObjectURL(blob), "_blank");
+    } catch {
+      /* ignore */
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="order">
+      <div className="order__hero" aria-hidden="true">🎉</div>
+      <h3 className="order__title">Order Placed Successfully!</h3>
+      <p className="order__id">Order ID: <b>{order.order_increment_id}</b></p>
+
+      <div className="order__items">
+        {order.items?.map((it, i) => (
+          <div className="order__line" key={i}>
+            <span className="order__lname">
+              {it.name} <span className="order__qty">×{it.qty}</span>
+            </span>
+            <span className="order__lprice">{money(it.row_total)}</span>
+          </div>
+        ))}
+        <div className="order__line order__line--total">
+          <span>Total Paid</span>
+          <strong>{money(order.total)}</strong>
+        </div>
+      </div>
+
+      {order.ship_to && <p className="order__meta">📦 Ship to: <b>{order.ship_to}</b></p>}
+      {order.delivery_by && <p className="order__meta">🚚 Delivery by: <b>{order.delivery_by}</b></p>}
+      <p className="order__meta">🧾 Invoice emailed to your registered email</p>
+
+      <div className="order__actions">
+        <button className="order__btn order__btn--primary" onClick={viewInvoice} disabled={busy}>
+          {busy ? "…" : "👁 View Invoice"}
+        </button>
+        <button className="order__btn" onClick={onShopAgain}>🛍️ Shop Again</button>
+      </div>
+    </div>
+  );
+}
+
+const EMPTY_FORM = { label: "", name: "", email: "", phone: "", street: "", city: "", region: "", postcode: "" };
+
+// In-chat checkout step 1: pick a saved address or add a new one.
+function AddressPicker({ addresses = [], done, onChoose, onAddNew }) {
+  return (
+    <div className="picker">
+      {addresses.map((a, i) => (
+        <button key={i} className="addr" disabled={done} onClick={() => onChoose(a)}>
+          <span className="addr__icon" aria-hidden="true">{addrIcon(a.label)}</span>
+          <span className="addr__body">
+            <span className="addr__label">{a.label || "Address"}</span>
+            {a.street && <span className="addr__line">{a.street}</span>}
+            <span className="addr__line">
+              {[a.city, a.region].filter(Boolean).join(", ")}
+              {a.postcode ? ` – ${a.postcode}` : ""}
+            </span>
+            {a.phone && <span className="addr__line">{a.phone}</span>}
+          </span>
+        </button>
+      ))}
+      <button className="picker__add" disabled={done} onClick={onAddNew}>＋ Add New Address</button>
+    </div>
+  );
+}
+
+// In-chat checkout step 2: pick one of the store's real Magento payment methods.
+function PaymentPicker({ methods = [], total, done, onChoose }) {
+  return (
+    <div className="picker">
+      {methods.length === 0 && <p className="cform__err">No payment methods available for this store.</p>}
+      {methods.map((m) => (
+        <button key={m.code} className="pay" disabled={done} onClick={() => onChoose(m)}>
+          <span className="pay__icon" aria-hidden="true">{payIcon(m.code)}</span>
+          <span className="pay__title">{m.title || m.code}</span>
+        </button>
+      ))}
+      {total != null && (
+        <div className="cart__total"><span>Total</span><strong>{money(total)}</strong></div>
+      )}
+    </div>
+  );
+}
+
+// Inline "Add New Address" form; collapses once submitted (parent marks it done).
+function AddressForm({ done, onSubmit }) {
+  const [form, setForm] = useState(EMPTY_FORM);
+  const set = (k) => (e) => setForm((f) => ({ ...f, [k]: e.target.value }));
+  if (done) return null;
+  return (
+    <form className="cform" onSubmit={(e) => { e.preventDefault(); onSubmit(form); }}>
+      <input className="auth__input" placeholder="Label (e.g. Home, Office)" value={form.label} onChange={set("label")} required />
+      <input className="auth__input" placeholder="Full name" value={form.name} onChange={set("name")} required />
+      <input className="auth__input" type="email" placeholder="Email" value={form.email} onChange={set("email")} required />
+      <input className="auth__input" placeholder="Phone" value={form.phone} onChange={set("phone")} required />
+      <input className="auth__input" placeholder="Street address" value={form.street} onChange={set("street")} required />
+      <input className="auth__input" placeholder="City" value={form.city} onChange={set("city")} required />
+      <input className="auth__input" placeholder="Region / Governorate" value={form.region} onChange={set("region")} />
+      <input className="auth__input" placeholder="Postcode" value={form.postcode} onChange={set("postcode")} required />
+      <button className="cart__checkout" type="submit">Save address</button>
+    </form>
   );
 }
 

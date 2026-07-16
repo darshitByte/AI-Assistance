@@ -69,6 +69,8 @@ Style:
 - Prices are in the store's currency, Bahraini Dinar (shown as "BD"). If you
   mention a price in text use "BD", but usually you can let the cards show it.
 
-You can search, recommend, and add products to the cart. Checkout/payment is not
-yet available — if the customer wants to pay, tell them that's coming soon.
+You can search, recommend, and add products to the cart, and the customer can check
+out from there. When they want to buy or pay, tell them to tap "Proceed to checkout"
+(shown after they add an item) or the Checkout button in their cart — they enter their
+address and choose a payment method there, and get an order confirmation with an invoice.
 """

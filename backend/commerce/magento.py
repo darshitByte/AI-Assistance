@@ -23,10 +23,11 @@ def _headers() -> dict:
     }
 
 
-def _get_json(url: str, timeout: int):
-    """GET → parsed JSON; on 401 (expired token) re-mint once and retry."""
+def _request(method: str, url: str, body: dict | None, timeout: int):
+    """Admin-token request → parsed JSON; on 401 (expired token) re-mint once and retry."""
+    data = json.dumps(body).encode() if body is not None else None
     for attempt in (1, 2):
-        req = urllib.request.Request(url, headers=_headers())
+        req = urllib.request.Request(url, data=data, headers=_headers(), method=method)
         try:
             with urllib.request.urlopen(req, timeout=timeout) as r:
                 return json.load(r)
@@ -35,6 +36,20 @@ def _get_json(url: str, timeout: int):
                 magento_token.get_token(force=True)
                 continue
             raise
+
+
+def _get_json(url: str, timeout: int):
+    return _request("GET", url, None, timeout)
+
+
+def get_json(path: str, timeout: int = 30):
+    """Admin-token GET by REST path (e.g. '/orders/5')."""
+    return _request("GET", _API + path, None, timeout)
+
+
+def post_json(path: str, body: dict, timeout: int = 30):
+    """Admin-token POST by REST path (e.g. '/order/5/invoice'). Used by checkout."""
+    return _request("POST", _API + path, body, timeout)
 
 
 def _image_url(entries: list | None) -> str | None:

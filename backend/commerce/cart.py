@@ -1,16 +1,17 @@
-"""Guest-cart operations — one Magento guest cart per user.
+"""Cart operations — one Magento customer cart (`/carts/mine`) per app user.
 
-Guest carts are anonymous (no auth). We lazily create a cart on first add and
-persist its masked id on the user's doc (users.cart_id) so the cart survives
-backend restarts and login/logout. Cloudflare requires a browser User-Agent.
+This store disallows guest checkout, so the cart lives on the app user's own
+Magento customer (see customer.py) rather than an anonymous guest cart. Every
+call carries that customer's bearer token; on a 401 (expired token) we re-mint
+once and retry. Cloudflare requires a browser User-Agent.
 """
 import json
 import urllib.error
 import urllib.request
 
+from commerce import customer
 from commerce.magento import fetch_images_by_sku
 from core import config
-from db import users as users_db
 
 _API = config.MAGENTO_BASE_URL.rstrip("/")
 _UA = {
@@ -21,11 +22,20 @@ _UA = {
 _FALLBACK_CCY = "BD"
 
 
-def _call(method: str, path: str, body: dict | None = None):
+def _call(username: str, method: str, path: str, body: dict | None = None):
+    """Customer-authenticated Magento call; re-mint the token once on 401 and retry."""
     data = json.dumps(body).encode() if body is not None else None
-    req = urllib.request.Request(_API + path, data=data, headers=_UA, method=method)
-    with urllib.request.urlopen(req, timeout=30) as r:
-        return json.load(r)
+    for attempt in (1, 2):
+        headers = dict(_UA)
+        headers["Authorization"] = f"Bearer {customer.get_token(username, force=(attempt == 2))}"
+        req = urllib.request.Request(_API + path, data=data, headers=headers, method=method)
+        try:
+            with urllib.request.urlopen(req, timeout=30) as r:
+                return json.load(r)
+        except urllib.error.HTTPError as e:
+            if e.code == 401 and attempt == 1:
+                continue
+            raise
 
 
 def _err(e: urllib.error.HTTPError) -> str:
@@ -39,46 +49,33 @@ def empty() -> dict:
     return {"items": [], "items_qty": 0, "grand_total": 0, "currency": _FALLBACK_CCY}
 
 
-def _cart_id(username: str, create: bool = False) -> str | None:
-    cid = users_db.get_cart_id(username)
-    if cid is None and create:
-        cid = _call("POST", "/guest-carts")
-        users_db.set_cart_id(username, cid)
-    return cid
+def _cart_id(username: str) -> int:
+    """Ensure the customer's active cart exists; return its quote id (idempotent)."""
+    return _call(username, "POST", "/carts/mine")
 
 
 def add_item(username: str, sku: str, qty: int = 1) -> dict:
-    cid = _cart_id(username, create=True)
+    cid = _cart_id(username)
     body = {"cartItem": {"sku": sku, "qty": qty, "quote_id": cid}}
     try:
-        _call("POST", f"/guest-carts/{cid}/items", body)
+        _call(username, "POST", "/carts/mine/items", body)
     except urllib.error.HTTPError as e:
-        # ponytail: no self-heal on a dead/expired guest cart — Magento returns 404
-        # for BOTH "cart gone" and "bad SKU", so a re-mint heuristic would wipe a
-        # live cart on a typo. If persisted carts start expiring in practice, detect
-        # cart-not-found by message text ("cartId") and re-mint only then.
         return {"ok": False, "error": _err(e), "cart": view(username)}
     return {"ok": True, "cart": view(username)}
 
 
 def remove_item(username: str, item_id: int) -> dict:
-    cid = _cart_id(username)
-    if not cid:
-        return {"ok": True, "cart": empty()}
     try:
-        _call("DELETE", f"/guest-carts/{cid}/items/{item_id}")
+        _call(username, "DELETE", f"/carts/mine/items/{item_id}")
     except urllib.error.HTTPError as e:
         return {"ok": False, "error": _err(e), "cart": view(username)}
     return {"ok": True, "cart": view(username)}
 
 
 def view(username: str) -> dict:
-    cid = _cart_id(username)
-    if not cid:
-        return empty()
     try:
-        cart = _call("GET", f"/guest-carts/{cid}")
-        totals = _call("GET", f"/guest-carts/{cid}/totals")
+        cart = _call(username, "GET", "/carts/mine")
+        totals = _call(username, "GET", "/carts/mine/totals")
     except urllib.error.HTTPError:
         return empty()
     items = cart.get("items", [])

@@ -998,6 +998,10 @@ body {
   font-family: var(--display);
   font-weight: 700;
   font-size: 15px;
+  cursor: pointer;
+}
+
+.cart__checkout:disabled {
   cursor: not-allowed;
   opacity: 0.6;
 }
@@ -1228,4 +1232,220 @@ body {
     animation-duration: 0.001ms !important;
     transition-duration: 0.001ms !important;
   }
+}
+
+/* ---------- checkout form (drawer) ---------- */
+.cform {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 16px;
+  overflow-y: auto;
+}
+
+.cform__err {
+  background: #d0483b18;
+  color: #b23a2e;
+  border-radius: 10px;
+  padding: 8px 12px;
+  font-size: 13px;
+}
+
+.pm {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 11px 13px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--paper);
+  cursor: pointer;
+  font-size: 15px;
+}
+
+.pm:has(input:checked) {
+  border-color: var(--leaf-bright);
+  box-shadow: 0 0 0 3px rgba(46, 169, 106, 0.16);
+}
+
+/* ---------- in-chat checkout pickers (address + payment) ---------- */
+.picker {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 10px;
+}
+
+.addr,
+.pay {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  text-align: left;
+  padding: 13px 15px;
+  border: 1.5px solid var(--border);
+  border-radius: 14px;
+  background: var(--surface);
+  color: var(--ink);
+  font: inherit;
+  cursor: pointer;
+  transition: border-color 0.15s, box-shadow 0.15s, transform 0.05s;
+}
+
+.addr:hover:not(:disabled),
+.pay:hover:not(:disabled) {
+  border-color: var(--leaf-bright);
+  box-shadow: 0 0 0 3px rgba(46, 169, 106, 0.14);
+}
+
+.addr:active:not(:disabled),
+.pay:active:not(:disabled) {
+  transform: scale(0.995);
+}
+
+.addr:disabled,
+.pay:disabled,
+.picker__add:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.addr__icon {
+  font-size: 22px;
+  line-height: 1;
+}
+
+.addr__body {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.addr__label {
+  font-weight: 600;
+  font-size: 15px;
+}
+
+.addr__line {
+  color: var(--ink-soft);
+  font-size: 13px;
+}
+
+.pay__icon {
+  font-size: 20px;
+}
+
+.pay__title {
+  font-weight: 600;
+  font-size: 15px;
+}
+
+.picker__add {
+  align-self: flex-start;
+  padding: 9px 16px;
+  border: 1.5px solid var(--leaf-bright);
+  border-radius: 999px;
+  background: var(--surface);
+  color: var(--leaf);
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.picker__add:hover:not(:disabled) {
+  background: rgba(46, 169, 106, 0.08);
+}
+
+/* ---------- order success card (in chat) ---------- */
+.order {
+  margin-top: 10px;
+  padding: 20px;
+  border: 1.5px solid var(--leaf-bright);
+  border-radius: 16px;
+  background: var(--paper);
+  text-align: center;
+}
+
+.order__hero {
+  font-size: 34px;
+  line-height: 1;
+}
+
+.order__title {
+  margin: 6px 0 2px;
+  font-family: var(--display);
+  color: var(--leaf);
+  font-size: 20px;
+}
+
+.order__id {
+  margin: 0 0 14px;
+  color: var(--ink-soft);
+  font-size: 14px;
+}
+
+.order__items {
+  text-align: left;
+  background: var(--bg, #fff);
+  border-radius: 12px;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+}
+
+.order__line {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 4px 0;
+  font-size: 14px;
+}
+
+.order__qty {
+  color: var(--ink-soft);
+}
+
+.order__line--total {
+  margin-top: 6px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
+  font-family: var(--display);
+  font-size: 16px;
+}
+
+.order__meta {
+  margin: 8px 0 0;
+  text-align: left;
+  font-size: 14px;
+  color: var(--ink);
+}
+
+.order__actions {
+  display: flex;
+  gap: 10px;
+  margin-top: 16px;
+}
+
+.order__btn {
+  flex: 1;
+  padding: 11px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--paper);
+  color: var(--ink);
+  font-family: var(--display);
+  font-weight: 700;
+  font-size: 14px;
+  cursor: pointer;
+}
+
+.order__btn--primary {
+  background: var(--leaf);
+  color: #fff;
+  border-color: var(--leaf);
+}
+
+.order__btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
 }
