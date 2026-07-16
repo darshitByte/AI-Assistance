@@ -1,16 +1,16 @@
 """Per app-user Magento customer + auth token.
 
 This store disallows guest checkout, so an order must belong to a real Magento
-customer. The app has its own accounts (Mongo + JWT) with no Magento side, so we
-lazily create ONE Magento customer per app user with deterministic synthetic
-credentials (derived from JWT_SECRET, never stored — re-derivable on demand) and
-cache the customer token in memory with a TTL — same model as the admin token in
-magento_token.py. Customer JWTs expire ~hourly like admin ones.
+customer. The app's identity IS the Magento customer: signup creates one with the
+user's real email+password (POST /customers, anonymous), login authenticates via
+the customer-token endpoint. The app's `username` value is that email.
 
-Store is behind Cloudflare (403s without a browser User-Agent).
+The customer password is NOT derivable (it's the user's own), so we cache it in
+process memory — same model as the token caches. On restart the cache is empty:
+get_token() raises CustomerError, which the API maps to 401 → the frontend logs
+the user out and they sign in again. Store is behind Cloudflare (403 without a
+browser User-Agent).
 """
-import hashlib
-import hmac
 import json
 import threading
 import time
@@ -22,14 +22,29 @@ from core import config
 _API = config.MAGENTO_BASE_URL.rstrip("/")
 _UA = {"Content-Type": "application/json", "Accept": "application/json", "User-Agent": "Mozilla/5.0"}
 _lock = threading.Lock()
-_tokens: dict[str, tuple[str, float]] = {}  # username -> (token, minted_at from time.monotonic())
+_tokens: dict[str, tuple[str, float]] = {}   # email -> (token, minted_at from time.monotonic())
+_passwords: dict[str, str] = {}              # email -> plaintext pw (in-memory only; ponytail ceiling)
 
 
-def _creds(username: str) -> tuple[str, str]:
-    """Synthetic Magento email+password for an app user. Deterministic (re-derivable,
-    never persisted); the password satisfies Magento's 3-character-class policy."""
-    digest = hmac.new(config.JWT_SECRET.encode(), username.encode(), hashlib.sha256).hexdigest()
-    return f"{username}@grocerzy-poc.com", "Aa1!" + digest[:16]
+class CustomerError(Exception):
+    """Any Magento customer create/auth failure, carrying a user-facing message."""
+
+
+def remember_password(email: str, password: str) -> None:
+    with _lock:
+        _passwords[email] = password
+
+
+def _creds(username: str) -> tuple[str, str | None]:
+    """username IS the email; password comes from the in-memory cache (None after restart)."""
+    return username, _passwords.get(username)
+
+
+def _msg(e: urllib.error.HTTPError) -> str:
+    try:
+        return json.loads(e.read().decode()).get("message", "Request failed.")
+    except Exception:  # noqa: BLE001
+        return "Request failed."
 
 
 def _post(path: str, body: dict, token: str | None = None):
@@ -41,42 +56,57 @@ def _post(path: str, body: dict, token: str | None = None):
         return json.load(r)
 
 
-def _ensure_customer(email: str, password: str, username: str) -> None:
-    """Create the Magento customer; a 400 means the email already exists — fine."""
+def _mint(email: str, password: str) -> str:
+    """Mint a customer token; 401 -> bad creds (CustomerError), other errors propagate as CustomerError."""
     try:
-        _post("/customers", {"customer": {"email": email, "firstname": username, "lastname": "Customer"},
-                             "password": password})
+        return _post("/integration/customer/token", {"username": email, "password": password})
     except urllib.error.HTTPError as e:
-        if e.code != 400:
-            raise
+        if e.code == 401:
+            raise CustomerError("Invalid email or password.") from e
+        raise CustomerError(_msg(e)) from e
 
 
-def _mint(username: str) -> str:
-    email, pw = _creds(username)
+def create(email: str, password: str) -> None:
+    """Create the Magento customer (anonymous). Raises CustomerError on policy failure or
+    duplicate email (message contains 'already exists'). Caches the password on success."""
     try:
-        return _post("/integration/customer/token", {"username": email, "password": pw})
+        _post("/customers", {
+            "customer": {"email": email, "firstname": email.split("@")[0] or "Customer", "lastname": "Customer"},
+            "password": password,
+        })
     except urllib.error.HTTPError as e:
-        if e.code == 401:  # customer doesn't exist yet → create, then retry once
-            _ensure_customer(email, pw, username)
-            return _post("/integration/customer/token", {"username": email, "password": pw})
-        raise
+        raise CustomerError(_msg(e)) from e
+    remember_password(email, password)
+
+
+def authenticate(email: str, password: str) -> str:
+    """Login path: verify creds by minting a token, cache password + token. Raises CustomerError."""
+    tok = _mint(email, password)
+    remember_password(email, password)
+    with _lock:
+        _tokens[email] = (tok, time.monotonic())
+    return tok
 
 
 def get_token(username: str, force: bool = False) -> str:
-    """Current customer token for an app user, re-minting if forced or past the TTL."""
+    """Cart/checkout path: current customer token, re-minting from the cached password past the TTL.
+    Raises CustomerError if no password is cached (backend restarted → re-login needed)."""
     with _lock:
         cached = _tokens.get(username)
         now = time.monotonic()
-        if force or cached is None or (now - cached[1]) > config.MAGENTO_AUTH_TTL:
-            token = _mint(username)
-            _tokens[username] = (token, now)
-            return token
-        return cached[0]
+        if not force and cached and (now - cached[1]) <= config.MAGENTO_AUTH_TTL:
+            return cached[0]
+    email, pw = _creds(username)
+    if not pw:
+        raise CustomerError("Session expired — please log in again.")
+    tok = _mint(email, pw)
+    with _lock:
+        _tokens[username] = (tok, time.monotonic())
+    return tok
 
 
-if __name__ == "__main__":  # self-check: creds are deterministic + policy-compliant (no network)
-    e1, p1 = _creds("alice")
-    assert (e1, p1) == _creds("alice"), "creds must be deterministic"
-    assert e1 == "alice@grocerzy-poc.com" and p1.startswith("Aa1!") and len(p1) == 20, (e1, p1)
-    assert _creds("bob")[1] != p1, "different users → different passwords"
+if __name__ == "__main__":  # network-free self-check: password cache + email passthrough
+    remember_password("a@b.com", "Secret@1")
+    assert _creds("a@b.com") == ("a@b.com", "Secret@1"), _creds("a@b.com")
+    assert _creds("missing@x.com") == ("missing@x.com", None)
     print("customer self-check ok")
