@@ -3,7 +3,7 @@ import { API_BASE } from "./config";
 
 export default function Auth({ onAuth }) {
   const [mode, setMode] = useState("login");
-  const [username, setUsername] = useState("");
+  const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [err, setErr] = useState("");
   const [busy, setBusy] = useState(false);
@@ -16,7 +16,7 @@ export default function Auth({ onAuth }) {
       const res = await fetch(`${API_BASE}/auth/${mode}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ username, password }),
+        body: JSON.stringify({ email, password }),
       });
       const data = await res.json();
       if (!res.ok) {
@@ -44,9 +44,10 @@ export default function Auth({ onAuth }) {
         <form onSubmit={submit} className="auth__form">
           <input
             className="auth__input"
-            placeholder="Username"
-            value={username}
-            onChange={(e) => setUsername(e.target.value)}
+            type="email"
+            placeholder="Email"
+            value={email}
+            onChange={(e) => setEmail(e.target.value)}
             autoFocus
           />
           <input
@@ -57,7 +58,7 @@ export default function Auth({ onAuth }) {
             onChange={(e) => setPassword(e.target.value)}
           />
           {err && <div className="auth__err">{err}</div>}
-          <button className="auth__btn" disabled={busy || !username || !password}>
+          <button className="auth__btn" disabled={busy || !email || !password}>
             {busy ? "…" : mode === "login" ? "Sign in" : "Sign up"}
           </button>
         </form>
@@ -73,7 +74,7 @@ export default function Auth({ onAuth }) {
             : "Already have an account? Sign in"}
         </button>
         <p className="auth__hint">
-          Demo login — <b>admin</b> / <b>admin@123</b>
+          Demo login — <b>demo@grocerzy-poc.com</b> / <b>Demo@123</b>
         </p>
       </div>
     </div>
