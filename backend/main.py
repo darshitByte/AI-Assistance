@@ -5,13 +5,15 @@ the routers (grouped by tag for the Swagger docs at /docs).
 """
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 
 from ai.mcp_client import MCPClient
 from ai.runtime import runtime
 from api import auth, cart, chat, checkout, health, session
 from commerce import magento_token
+from commerce.customer import CustomerError
 from core import config
 from core.log import logger
 from db import users
@@ -40,6 +42,12 @@ app = FastAPI(
 app.add_middleware(
     CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"]
 )
+
+
+@app.exception_handler(CustomerError)
+async def _customer_error(_: Request, exc: CustomerError):
+    # Customer token couldn't be minted (bad creds / password not cached after restart).
+    return JSONResponse(status_code=401, content={"detail": str(exc)})
 
 app.include_router(health.router)
 app.include_router(auth.router)
