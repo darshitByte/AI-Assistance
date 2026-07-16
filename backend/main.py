@@ -10,7 +10,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from ai.mcp_client import MCPClient
 from ai.runtime import runtime
-from api import auth, cart, chat, health, session
+from api import auth, cart, chat, checkout, health, session
 from commerce import magento_token
 from core import config
 from core.log import logger
@@ -46,3 +46,4 @@ app.include_router(auth.router)
 app.include_router(chat.router)
 app.include_router(session.router)
 app.include_router(cart.router)
+app.include_router(checkout.router)
