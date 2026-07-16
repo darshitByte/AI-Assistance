@@ -22,7 +22,7 @@ _UA = {
 _FALLBACK_CCY = "BD"
 
 
-def _call(username: str, method: str, path: str, body: dict | None = None):
+def _call(username: str, method: str, path: str, body: dict | None = None, timeout: int = 30):
     """Customer-authenticated Magento call; re-mint the token once on 401 and retry."""
     data = json.dumps(body).encode() if body is not None else None
     for attempt in (1, 2):
@@ -30,7 +30,7 @@ def _call(username: str, method: str, path: str, body: dict | None = None):
         headers["Authorization"] = f"Bearer {customer.get_token(username, force=(attempt == 2))}"
         req = urllib.request.Request(_API + path, data=data, headers=headers, method=method)
         try:
-            with urllib.request.urlopen(req, timeout=30) as r:
+            with urllib.request.urlopen(req, timeout=timeout) as r:
                 return json.load(r)
         except urllib.error.HTTPError as e:
             if e.code == 401 and attempt == 1:

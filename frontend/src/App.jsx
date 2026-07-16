@@ -404,7 +404,7 @@ export default function App() {
               authFetch={authFetch}
               onContinue={() => replyToAction("What else would you like to add? 🛍️")}
               onCheckout={startCheckout}
-              onShopAgain={() => setCartOpen(false)}
+              onShopAgain={() => { setCartOpen(false); newChat(); }}
               onChooseAddress={chooseAddress}
               onAddNew={openAddressForm}
               onSubmitAddress={addAddress}
@@ -756,7 +756,7 @@ function OrderCard({ order, authFetch, onShopAgain }) {
   );
 }
 
-const EMPTY_FORM = { label: "", name: "", email: "", phone: "", street: "", city: "", region: "", postcode: "" };
+const EMPTY_FORM = { name: "", email: "", phone: "", street: "", city: "", region: "", postcode: "" };
 
 // In-chat checkout step 1: pick a saved address or add a new one.
 function AddressPicker({ addresses = [], done, onChoose, onAddNew }) {
@@ -766,8 +766,7 @@ function AddressPicker({ addresses = [], done, onChoose, onAddNew }) {
         <button key={i} className="addr" disabled={done} onClick={() => onChoose(a)}>
           <span className="addr__icon" aria-hidden="true">{addrIcon(a.label)}</span>
           <span className="addr__body">
-            <span className="addr__label">{a.label || "Address"}</span>
-            {a.street && <span className="addr__line">{a.street}</span>}
+            <span className="addr__label">{a.street || a.city || "Address"}</span>
             <span className="addr__line">
               {[a.city, a.region].filter(Boolean).join(", ")}
               {a.postcode ? ` – ${a.postcode}` : ""}
@@ -806,7 +805,6 @@ function AddressForm({ done, onSubmit }) {
   if (done) return null;
   return (
     <form className="cform" onSubmit={(e) => { e.preventDefault(); onSubmit(form); }}>
-      <input className="auth__input" placeholder="Label (e.g. Home, Office)" value={form.label} onChange={set("label")} required />
       <input className="auth__input" placeholder="Full name" value={form.name} onChange={set("name")} required />
       <input className="auth__input" type="email" placeholder="Email" value={form.email} onChange={set("email")} required />
       <input className="auth__input" placeholder="Phone" value={form.phone} onChange={set("phone")} required />

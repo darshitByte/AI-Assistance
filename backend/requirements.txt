@@ -9,3 +9,4 @@ langchain-mcp-adapters>=0.3
 pymongo>=4.6
 PyJWT>=2.8
 fpdf2>=2.7
+langfuse>=3

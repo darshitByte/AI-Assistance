@@ -5,6 +5,7 @@ from fastapi import APIRouter, Depends, HTTPException, Response
 from pydantic import BaseModel
 
 from api.deps import current_user
+from commerce import address as address_book
 from commerce import checkout as checkoutmod
 from core.log import logger
 from db import users as users_db
@@ -30,14 +31,14 @@ class PlaceRequest(BaseModel):
 
 @router.get("/addresses")
 async def saved_addresses(user: str = Depends(current_user)):
-    """The customer's saved delivery addresses for the in-chat address picker."""
-    return await asyncio.to_thread(users_db.get_addresses, user)
+    """The customer's saved delivery addresses (from their Magento account)."""
+    return await asyncio.to_thread(address_book.get_addresses, user)
 
 
 @router.post("/addresses")
 async def add_address(req: AddressRequest, user: str = Depends(current_user)):
-    logger.info("CHECKOUT add-address user=%s label=%s", user, req.label)
-    return await asyncio.to_thread(users_db.add_address, user, req.model_dump())
+    logger.info("CHECKOUT add-address user=%s city=%s", user, req.city)
+    return await asyncio.to_thread(address_book.add_address, user, req.model_dump())
 
 
 @router.post("/quote")

@@ -40,8 +40,7 @@ def _pick_method(methods: list[dict]) -> dict | None:
 
 
 def quote(username: str, form: dict) -> dict:
-    """Persist the address, set shipping info, return the store's payment methods + total."""
-    users_db.set_address(username, form)
+    """Set shipping info on the Magento cart, return the store's payment methods + total."""
     address = _address(form)
     if not _call(username, "GET", "/carts/mine").get("items"):
         return {"ok": False, "error": "Your cart is empty."}
@@ -68,9 +67,9 @@ def quote(username: str, form: dict) -> dict:
 
 
 def place(username: str, payment_method_code: str) -> dict:
-    """Place the order (anonymous), then invoice it (admin token). Order stands even if
-    invoicing fails."""
-    address = _address(users_db.get_address(username) or {})
+    """Place the order, then invoice it (admin token). Order stands even if invoicing fails.
+    The cart already carries the billing address + customer email (set by quote's
+    shipping-information), so we just submit the payment method — DB-free, no address here."""
     if not _call(username, "GET", "/carts/mine").get("items"):
         return {"ok": False, "error": "Your cart is empty."}
     # ponytail: payment seam — an offline method (COD/bank transfer) places the order
@@ -79,7 +78,6 @@ def place(username: str, payment_method_code: str) -> dict:
     try:
         order_id = _call(username, "POST", "/carts/mine/payment-information", {
             "paymentMethod": {"method": payment_method_code},
-            "billingAddress": address,
         })
     except urllib.error.HTTPError as e:
         return {"ok": False, "error": _err(e)}

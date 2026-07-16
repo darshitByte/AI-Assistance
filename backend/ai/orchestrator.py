@@ -7,10 +7,22 @@ return a fresh cart snapshot.
 """
 import asyncio
 import json
+from functools import cache
 
 from ai.agent import UserContext, ensure_fresh_mcp, get_agent
 from commerce import cart as cartmod
 from commerce.magento import fetch_images_by_sku
+from core import config
+
+
+@cache
+def _tracer():
+    """Langfuse LangChain callback, built once. Reads keys from os.environ
+    (loaded by config). Returns None when creds are absent → tracing is a no-op."""
+    if not config.LANGFUSE_ENABLED:
+        return None
+    from langfuse.langchain import CallbackHandler
+    return CallbackHandler()
 
 # Tools whose output we harvest into product cards: catalogue searches (many
 # items) plus single-product detail lookups (one flat object).
@@ -28,10 +40,17 @@ async def run_turn(username: str, user_message: str, session_id: str) -> dict:
     reply = "I wasn't able to finish that — could you try rephrasing?"
     cart_added = False  # did an add_to_cart run this turn? → UI shows next-step buttons
 
+    run_config = {"configurable": {"thread_id": f"{username}:{session_id}"}}
+    if handler := _tracer():
+        # Groups traces by user + chat session in the Langfuse UI.
+        run_config["callbacks"] = [handler]
+        run_config["metadata"] = {"langfuse_user_id": username,
+                                  "langfuse_session_id": session_id}
+
     async for update in agent.astream(
         {"messages": [{"role": "user", "content": user_message}]},
         # thread_id scopes the checkpointer's history: per user, per chat session.
-        config={"configurable": {"thread_id": f"{username}:{session_id}"}},
+        config=run_config,
         context=UserContext(username=username),
         stream_mode="updates",
     ):

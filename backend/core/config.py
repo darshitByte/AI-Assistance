@@ -30,6 +30,12 @@ MCP_ENV = {
     "MAGENTO_API_TOKEN": MAGENTO_API_TOKEN,
 }
 
+# --- Langfuse (LLM tracing; optional — handler reads these from os.environ) ---
+LANGFUSE_PUBLIC_KEY = os.getenv("LANGFUSE_PUBLIC_KEY", "")
+LANGFUSE_SECRET_KEY = os.getenv("LANGFUSE_SECRET_KEY", "")
+LANGFUSE_BASE_URL = os.getenv("LANGFUSE_BASE_URL", "https://cloud.langfuse.com")
+LANGFUSE_ENABLED = bool(LANGFUSE_PUBLIC_KEY and LANGFUSE_SECRET_KEY)
+
 # --- Auth / MongoDB ---
 MONGO_URL = os.getenv("MONGO_URL", "mongodb://localhost:27017")
 MONGO_DB = os.getenv("MONGO_DB", "grocerzy")
