@@ -505,10 +505,17 @@ body {
   background: var(--surface);
 }
 
+.composer__field {
+  flex: 1;
+  min-width: 0;
+  position: relative;
+  display: flex;
+}
+
 .composer__input {
   flex: 1;
   min-width: 0;
-  padding: 13px 16px;
+  padding: 13px 48px 13px 16px; /* right room for the in-field mic */
   border-radius: 14px;
   border: 1px solid var(--border);
   background: var(--paper);
@@ -551,6 +558,53 @@ body {
   background: var(--border);
   color: var(--ink-soft);
   cursor: default;
+}
+
+.composer__mic {
+  position: absolute;
+  top: 50%;
+  right: 6px;
+  transform: translateY(-50%);
+  width: 34px;
+  height: 34px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  border-radius: 10px;
+  background: transparent;
+  color: var(--ink-soft);
+  font-size: 17px;
+  line-height: 1;
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+
+.composer__mic:hover:not(:disabled) {
+  background: rgba(46, 169, 106, 0.12);
+  color: var(--ink);
+}
+
+.composer__mic:disabled {
+  color: var(--ink-soft);
+  opacity: 0.5;
+  cursor: default;
+}
+
+.composer__mic--on {
+  background: #e5484d;
+  color: #fff;
+  animation: mic-pulse 1.2s ease-in-out infinite;
+}
+
+.composer__mic--on:hover:not(:disabled) {
+  background: #e5484d;
+  color: #fff;
+}
+
+@keyframes mic-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(229, 72, 77, 0.5); }
+  50% { box-shadow: 0 0 0 6px rgba(229, 72, 77, 0); }
 }
 
 /* ---------- post-add next-step buttons ---------- */

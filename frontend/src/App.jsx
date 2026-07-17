@@ -1,8 +1,156 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import Auth from "./Auth";
 import { API_BASE, CURRENCY } from "./config";
+
+const SILENCE_MS = 3000; // ponytail: auto-send after this much silence; one-line tweak
+
+// Flatten markdown reply text to something that reads naturally aloud.
+// ponytail: regex strip, not a markdown parser — the reply set is simple prose + bullets.
+function speakable(md) {
+  return (md || "")
+    .replace(/```[\s\S]*?```/g, " ") // code fences
+    .replace(/`([^`]+)`/g, "$1") // inline code
+    .replace(/!\[[^\]]*\]\([^)]*\)/g, " ") // images
+    .replace(/\[([^\]]+)\]\([^)]*\)/g, "$1") // links → link text
+    .replace(/^\s{0,3}#{1,6}\s+/gm, "") // headings
+    .replace(/^\s{0,3}>\s?/gm, "") // blockquotes
+    .replace(/^\s{0,3}[-*+]\s+/gm, "") // bullet markers
+    .replace(/[*_~]/g, "") // emphasis marks
+    .replace(/[\u{1F000}-\u{1FAFF}\u{2600}-\u{27BF}\u{2190}-\u{21FF}\u{2B00}-\u{2BFF}️]/gu, "") // emoji/pictographs
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+// Text-to-speech via the browser-native Web Speech API (all modern browsers).
+// ponytail: native platform feature, no dependency. enabled persists in localStorage.
+function useTTS() {
+  const supported = typeof window !== "undefined" && "speechSynthesis" in window;
+  const [enabled, setEnabled] = useState(
+    () => supported && localStorage.getItem("tts") === "on"
+  );
+
+  const cancel = useCallback(() => {
+    if (supported) window.speechSynthesis.cancel();
+  }, [supported]);
+
+  const speak = useCallback(
+    (text) => {
+      if (!supported) return;
+      const say = speakable(text);
+      if (!say) return;
+      window.speechSynthesis.cancel(); // interrupt any in-flight speech
+      const u = new SpeechSynthesisUtterance(say);
+      u.lang = "en-US";
+      window.speechSynthesis.speak(u);
+    },
+    [supported]
+  );
+
+  const toggle = useCallback(() => {
+    setEnabled((on) => {
+      const next = !on;
+      localStorage.setItem("tts", next ? "on" : "off");
+      if (!next) window.speechSynthesis.cancel(); // muting stops current speech
+      return next;
+    });
+  }, []);
+
+  useEffect(() => cancel, [cancel]); // stop speaking on unmount
+
+  return { supported, enabled, toggle, speak, cancel };
+}
+
+// Speech-to-text via the browser-native Web Speech API (Chrome/Edge; localhost or HTTPS).
+// ponytail: native platform feature, no dependency. onText receives the live transcript;
+// onSilence fires when the user goes quiet for SILENCE_MS (auto-send). Tapping the mic to
+// stop cancels the pending auto-send and leaves the text for manual editing.
+function useSpeech(onText, onSilence) {
+  const Recognition =
+    typeof window !== "undefined" &&
+    (window.SpeechRecognition || window.webkitSpeechRecognition);
+  const supported = !!Recognition;
+
+  const [listening, setListening] = useState(false);
+  const [error, setError] = useState("");
+  const recRef = useRef(null);
+  const timerRef = useRef(null);
+  const spokeRef = useRef(false); // did this session recognize any speech?
+  const manualRef = useRef(false); // did the user tap the mic to cancel?
+  const onTextRef = useRef(onText);
+  onTextRef.current = onText; // keep latest callbacks without re-creating recognition
+  const onSilenceRef = useRef(onSilence);
+  onSilenceRef.current = onSilence;
+
+  const clearTimer = () => {
+    if (timerRef.current) {
+      clearTimeout(timerRef.current);
+      timerRef.current = null;
+    }
+  };
+
+  const toggle = useCallback(() => {
+    if (!supported) return;
+    if (recRef.current) {
+      manualRef.current = true; // tap = cancel: onend will skip the auto-send
+      clearTimer();
+      recRef.current.stop(); // fires onend → resets listening
+      return;
+    }
+    const rec = new Recognition();
+    rec.lang = "en-US";
+    rec.interimResults = true;
+    rec.continuous = true; // stay on; the silence timer ends it after SILENCE_MS
+    rec.onresult = (e) => {
+      let transcript = "";
+      for (let i = 0; i < e.results.length; i++) {
+        transcript += e.results[i][0].transcript; // full session transcript (continuous)
+      }
+      spokeRef.current = true;
+      onTextRef.current(transcript);
+      // Restart the silence countdown on every recognized word; firing it just
+      // stops recognition — onend is the single place that decides to auto-send.
+      clearTimer();
+      timerRef.current = setTimeout(() => {
+        timerRef.current = null;
+        recRef.current?.stop();
+      }, SILENCE_MS);
+    };
+    rec.onerror = (e) => {
+      setError(
+        e.error === "not-allowed" || e.error === "service-not-allowed"
+          ? "Microphone unavailable — check browser permissions."
+          : ""
+      );
+    };
+    rec.onend = () => {
+      clearTimer();
+      recRef.current = null;
+      setListening(false);
+      // Auto-send when speech was recognized and the user didn't cancel — whether
+      // the session ended via our silence timer or Chrome closed it on its own.
+      if (spokeRef.current && !manualRef.current) onSilenceRef.current();
+    };
+    recRef.current = rec;
+    spokeRef.current = false;
+    manualRef.current = false;
+    setError("");
+    setListening(true);
+    rec.start();
+  }, [supported, Recognition]);
+
+  // Stop recognition + timer if the component unmounts mid-listen.
+  useEffect(
+    () => () => {
+      clearTimer();
+      recRef.current?.stop();
+    },
+    []
+  );
+
+  return { supported, listening, error, toggle };
+}
 
 const SUGGESTIONS = [
   { emoji: "🎧", text: "Show me some Sony headphones" },
@@ -11,6 +159,20 @@ const SUGGESTIONS = [
 ];
 
 const money = (n) => `${CURRENCY} ${Number(n || 0).toLocaleString()}`;
+
+// Spoken summary of a placed order (TTS reads this; not rendered on screen).
+function orderSpeech(o) {
+  const items = (o.items || []).map((it) => `${it.name} times ${it.qty}`).join(", ");
+  return [
+    "Order placed successfully.",
+    items && `Items: ${items}.`,
+    o.total != null && `Total paid ${money(o.total)}.`,
+    o.ship_to && `Ship to ${o.ship_to}.`,
+    o.delivery_by && `Delivery by ${o.delivery_by}.`,
+  ]
+    .filter(Boolean)
+    .join(" ");
+}
 const EMPTY_CART = { items: [], items_qty: 0, grand_total: 0, currency: CURRENCY };
 
 const addrIcon = (label = "") => {
@@ -52,6 +214,31 @@ export default function App() {
   const [cart, setCart] = useState(EMPTY_CART);
   const [cartOpen, setCartOpen] = useState(false);
   const [pending, setPending] = useState(null); // null | "address" | "payment": in-chat checkout step gating the composer
+  // Voice input: append recognized speech to whatever's in the composer.
+  // The utterance's live/interim text replaces itself; committed text stays.
+  const speechBaseRef = useRef("");
+  const inputRef = useRef(""); // latest input, read by the silence-timer auto-send
+  const speech = useSpeech(
+    (transcript) => setInput((speechBaseRef.current + transcript).trimStart()),
+    () => {
+      const text = inputRef.current.trim();
+      if (text && !pending) send(text); // 4s of silence → auto-send; skip empty / checkout
+    }
+  );
+  inputRef.current = input; // mirror latest input for the auto-send callback
+  const tts = useTTS();
+  // Auto-speak only newly-appended live bot replies — never restored history,
+  // session switches, resets, or in-place edits (all resync the count silently).
+  const spokenCountRef = useRef(0);
+  useEffect(() => {
+    const appendedOne = messages.length === spokenCountRef.current + 1;
+    const last = messages[messages.length - 1];
+    const say = last?.speakText || last?.text; // speakText: spoken-only (e.g. order card)
+    if (appendedOne && tts.enabled && last?.role === "bot" && say) {
+      tts.speak(say);
+    }
+    spokenCountRef.current = messages.length;
+  }, [messages, tts]);
   const [sessions, setSessions] = useState([]);
   const [sessionsOpen, setSessionsOpen] = useState(false);
   const logRef = useRef(null);
@@ -385,7 +572,7 @@ export default function App() {
         return;
       }
       setCart(EMPTY_CART);
-      bot({ text: "", order: data });
+      bot({ text: "", order: data, speakText: orderSpeech(data) });
     } catch {
       bot({ text: "Order failed. Please try again." });
     } finally {
@@ -442,6 +629,17 @@ export default function App() {
             <span className="cartbtn__icon" aria-hidden="true">✎</span>
             New chat
           </button>
+          {tts.supported && (
+            <button
+              className="cartbtn"
+              onClick={tts.toggle}
+              aria-label={tts.enabled ? "Mute spoken replies" : "Speak replies aloud"}
+              title={tts.enabled ? "Mute spoken replies" : "Speak replies aloud"}
+            >
+              <span className="cartbtn__icon" aria-hidden="true">{tts.enabled ? "🔊" : "🔇"}</span>
+              {tts.enabled ? "Voice on" : "Voice off"}
+            </button>
+          )}
           <button className="cartbtn" onClick={() => setCartOpen(true)} aria-label="Open cart">
             <span className="cartbtn__icon" aria-hidden="true">🛒</span>
             Cart
@@ -522,14 +720,34 @@ export default function App() {
           send(input);
         }}
       >
-        <input
-          className="composer__input"
-          value={input}
-          onChange={(e) => setInput(e.target.value)}
-          placeholder={pending ? "Use the buttons above to continue…" : "Ask for a product…"}
-          disabled={!!pending}
-          autoFocus
-        />
+        <div className="composer__field">
+          <input
+            className="composer__input"
+            value={input}
+            onChange={(e) => setInput(e.target.value)}
+            placeholder={pending ? "Use the buttons above to continue…" : "Ask for a product…"}
+            disabled={!!pending}
+            autoFocus
+          />
+          {speech.supported && (
+            <button
+              type="button"
+              className={`composer__mic${speech.listening ? " composer__mic--on" : ""}`}
+              onClick={() => {
+                if (!speech.listening) {
+                  // Snapshot current text so the transcript appends after it (with a space).
+                  speechBaseRef.current = input ? input.replace(/\s*$/, "") + " " : "";
+                }
+                speech.toggle();
+              }}
+              disabled={!!pending}
+              aria-label={speech.listening ? "Stop voice input" : "Start voice input"}
+              title={speech.error || (speech.listening ? "Stop voice input" : "Start voice input")}
+            >
+              {speech.listening ? "⏺" : "🎤"}
+            </button>
+          )}
+        </div>
         <button className="composer__send" type="submit" disabled={loading || !!pending || !input.trim()}>
           {loading ? "…" : "Send"}
         </button>
