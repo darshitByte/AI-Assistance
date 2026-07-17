@@ -16,6 +16,10 @@ services:
     environment:
       # Reach the Mongo container by service name (overrides .env for Docker).
       MONGO_URL: mongodb://mongo:27017
+    networks:
+      - app_network
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     ports:
       - "10302:8000"
     depends_on:
@@ -28,7 +32,13 @@ services:
       dockerfile: Dockerfile
       args:
         # Where the browser reaches the backend (published port on the host).
-        VITE_API_BASE: http://localhost:10302
+        # Relative base → browser hits the frontend's own origin; nginx proxies
+        # /api/* to the backend container. Works from any host/IP.
+        VITE_API_BASE: /api
+    networks:
+      - app_network
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     image: grocerzy-frontend
     ports:
       - "10301:80"
@@ -38,3 +48,7 @@ services:
 
 volumes:
   mongo-data:
+
+networks:
+  app_network:
+    driver: bridge
