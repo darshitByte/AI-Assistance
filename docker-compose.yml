@@ -5,6 +5,8 @@ services:
       - mongo-data:/data/db
     ports:
       - "10303:27017"
+    networks:              # must join app_network so backend can resolve "mongo"
+      - app_network
     restart: unless-stopped
 
   backend:
