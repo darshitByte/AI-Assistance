@@ -39,6 +39,7 @@ async def run_turn(username: str, user_message: str, session_id: str, guest: boo
     await ensure_fresh_mcp()  # re-mint the Magento token + respawn MCP if expired
     agent = await get_agent()
     collected: dict[str, dict] = {}
+    suggestions: list[str] = []  # tappable choices the agent offered (suggest_options)
     reply = "I wasn't able to finish that — could you try rephrasing?"
     cart_added = False  # did an add_to_cart run this turn? → UI shows next-step buttons
 
@@ -63,12 +64,17 @@ async def run_turn(username: str, user_message: str, session_id: str, guest: boo
                     _collect_products(_text(msg.content), collected)
                 elif mtype == "tool" and getattr(msg, "name", None) == "add_to_cart":
                     cart_added = True
+                elif mtype == "tool" and getattr(msg, "name", None) == "suggest_options":
+                    try:  # last call this turn wins; ignore a [tool error] string
+                        suggestions = json.loads(_text(msg.content)).get("options", []) or suggestions
+                    except (json.JSONDecodeError, TypeError, AttributeError):
+                        pass
                 elif mtype == "ai" and msg.content and not getattr(msg, "tool_calls", None):
                     reply = _text(msg.content).strip()
 
     cart = await asyncio.to_thread((guest_cart if guest else cartmod).view, username)
     return {"reply": reply, "products": await _enrich(collected),
-            "cart": cart, "cart_added": cart_added}
+            "cart": cart, "cart_added": cart_added, "suggestions": suggestions}
 
 
 def _text(content) -> str:

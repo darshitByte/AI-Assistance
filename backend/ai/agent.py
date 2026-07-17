@@ -76,6 +76,16 @@ async def browse_kinds(query: str) -> str:
 
 
 @tool
+def suggest_options(labels: list[str]) -> str:
+    """Offer the customer a short set of tappable choices to go with a narrowing
+    question. The app renders each label as a button the customer taps instead of
+    typing — so pass 2-4 short, plain labels built from what's really in stock
+    (call `browse_kinds` first), and don't also list them in your reply. Renders
+    buttons, NOT product cards."""
+    return json.dumps({"options": labels})
+
+
+@tool
 async def search_within_budget(
     query: str, max_price: float | None = None, min_price: float | None = None
 ) -> str:
@@ -166,7 +176,7 @@ async def get_agent():
             extra_body={"reasoning_effort": "low"},
         )
         mcp_tools = [_resilient(t) for t in await load_mcp_tools(runtime.mcp.session)]
-        tools = mcp_tools + CART_TOOLS + [browse_kinds, search_within_budget]
+        tools = mcp_tools + CART_TOOLS + [browse_kinds, search_within_budget, suggest_options]
         _agent = create_agent(
             model,
             tools=tools,

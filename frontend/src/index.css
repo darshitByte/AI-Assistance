@@ -211,6 +211,13 @@ body {
   justify-content: center;
 }
 
+/* Chips rendered inside a bot bubble (suggest_options) — left-aligned under the text. */
+.tags--inline {
+  justify-content: flex-start;
+  gap: 8px;
+  margin-top: 10px;
+}
+
 .tag {
   display: inline-flex;
   align-items: center;

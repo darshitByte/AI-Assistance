@@ -31,6 +31,7 @@ class ChatResponse(BaseModel):
     products: list[Product] = []
     cart: dict = {}
     cart_added: bool = False  # → UI shows "keep shopping / checkout" buttons
+    suggestions: list[str] = []  # tappable choices to render alongside the reply
 
 
 @router.post("/chat", response_model=ChatResponse)
@@ -54,7 +55,8 @@ async def chat(req: ChatRequest, ident: tuple[str, bool] = Depends(identity)):
         user, len(result["reply"]), len(result["products"]), result["cart"].get("items_qty", 0),
     )
     return ChatResponse(reply=result["reply"], products=result["products"],
-                        cart=result["cart"], cart_added=result["cart_added"])
+                        cart=result["cart"], cart_added=result["cart_added"],
+                        suggestions=result["suggestions"])
 
 
 @router.get("/allmessage")

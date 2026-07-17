@@ -400,7 +400,7 @@ export default function App() {
       const data = await res.json();
       setMessages((m) => [
         ...m,
-        { role: "bot", text: data.reply || "No reply.", products: data.products || [], cartAdded: data.cart_added },
+        { role: "bot", text: data.reply || "No reply.", products: data.products || [], cartAdded: data.cart_added, suggestions: data.suggestions || [] },
       ]);
       if (data.cart) setCart(data.cart);
       refreshSessions(); // first message may have just AI-named this chat
@@ -680,6 +680,7 @@ export default function App() {
               idx={i}
               {...m}
               onAdd={addToCart}
+              onSelect={send}
               authFetch={authFetch}
               onContinue={() => replyToAction("What else would you like to add? 🛍️")}
               onCheckout={startCheckout}
@@ -876,8 +877,8 @@ function CartPanel({ cart, open, onClose, onRemove, onCheckout }) {
 }
 
 function Message({
-  role, text, products, order, kind, addresses, methods, total, done, idx,
-  onAdd, authFetch, cartAdded, onContinue, onCheckout, onShopAgain,
+  role, text, products, suggestions, order, kind, addresses, methods, total, done, idx,
+  onAdd, onSelect, authFetch, cartAdded, onContinue, onCheckout, onShopAgain,
   onChooseAddress, onAddNew, onSubmitAddress, onChoosePayment, onCheckoutLogin,
 }) {
   return (
@@ -912,6 +913,15 @@ function Message({
                 <button className="msg-actions__btn msg-actions__btn--primary" onClick={onCheckout}>
                   Proceed to checkout →
                 </button>
+              </div>
+            )}
+            {suggestions?.length > 0 && (
+              <div className="tags tags--inline">
+                {suggestions.map((s) => (
+                  <button key={s} className="tag" onClick={() => onSelect(s)}>
+                    {s}
+                  </button>
+                ))}
               </div>
             )}
             {products?.length > 0 && (
