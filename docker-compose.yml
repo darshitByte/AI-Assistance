@@ -4,7 +4,7 @@ services:
     volumes:
       - mongo-data:/data/db
     ports:
-      - "27017:27017"
+      - "10303:27017"
     restart: unless-stopped
 
   backend:
@@ -17,7 +17,7 @@ services:
       # Reach the Mongo container by service name (overrides .env for Docker).
       MONGO_URL: mongodb://mongo:27017
     ports:
-      - "8000:8000"
+      - "10302:8000"
     depends_on:
       - mongo
     restart: unless-stopped
@@ -28,10 +28,10 @@ services:
       dockerfile: Dockerfile
       args:
         # Where the browser reaches the backend (published port on the host).
-        VITE_API_BASE: http://localhost:8000
+        VITE_API_BASE: http://localhost:10302
     image: grocerzy-frontend
     ports:
-      - "3000:80"
+      - "10301:80"
     depends_on:
       - backend
     restart: unless-stopped
