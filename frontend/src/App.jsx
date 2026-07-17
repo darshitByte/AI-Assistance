@@ -30,7 +30,12 @@ const payIcon = (code = "") => {
 
 export default function App() {
   const [token, setToken] = useState(() => localStorage.getItem("token") || "");
+  const [guestId, setGuestId] = useState(() => localStorage.getItem("guest_id") || "");
   const [username, setUsername] = useState(() => localStorage.getItem("username") || "");
+  // Token obtained at the checkout login while browsing as a guest. Held in a ref
+  // (not `token` state) so becoming authed mid-chat doesn't retrigger the load
+  // effect and wipe the in-progress checkout. authFetch prefers it over the guest id.
+  const checkoutTokenRef = useRef("");
   const [sessionId, setSessionId] = useState(() => {
     let s = localStorage.getItem("session_id");
     if (!s) {
@@ -52,6 +57,7 @@ export default function App() {
   const logRef = useRef(null);
 
   function refreshSessions() {
+    if (!token) return; // the sessions sidebar is JWT-only; a guest has none
     authFetch("/sessions")
       .then((r) => r.json())
       .then((d) => setSessions(d.sessions || []))
@@ -59,15 +65,14 @@ export default function App() {
   }
 
   function authFetch(path, options = {}) {
-    return fetch(`${API_BASE}${path}`, {
-      ...options,
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${token}`,
-        ...(options.headers || {}),
-      },
-    }).then((r) => {
-      if (r.status === 401) {
+    const authed = token || checkoutTokenRef.current;
+    const headers = { "Content-Type": "application/json", ...(options.headers || {}) };
+    if (authed) headers.Authorization = `Bearer ${authed}`;
+    else if (guestId) headers["X-Guest-Id"] = guestId;
+    return fetch(`${API_BASE}${path}`, { ...options, headers }).then((r) => {
+      // Only bounce to the login screen for a real logged-in session; a guest
+      // hitting an authed-only route just gets the error surfaced by the caller.
+      if (r.status === 401 && token) {
         logout();
         throw new Error("unauthorized");
       }
@@ -85,16 +90,30 @@ export default function App() {
   function onAuth(t, u) {
     localStorage.setItem("token", t);
     localStorage.setItem("username", u);
+    localStorage.removeItem("guest_id"); // becoming a real user ends any guest session
+    checkoutTokenRef.current = "";
+    setGuestId("");
     newSession(); // fresh chat per login (also isolates a new user on a shared browser)
     setUsername(u);
     setToken(t);
   }
 
+  // "Continue to chat" on the login screen: browse anonymously with a random guest id.
+  function startGuest() {
+    const g = crypto.randomUUID();
+    localStorage.setItem("guest_id", g);
+    newSession();
+    setGuestId(g);
+  }
+
   function logout() {
     localStorage.removeItem("token");
     localStorage.removeItem("username");
+    localStorage.removeItem("guest_id");
     localStorage.removeItem("session_id");
+    checkoutTokenRef.current = "";
     setToken("");
+    setGuestId("");
     setMessages([]);
     setCart(EMPTY_CART);
     setCartOpen(false);
@@ -124,7 +143,7 @@ export default function App() {
   }
 
   useEffect(() => {
-    if (!token) return;
+    if (!token && !guestId) return;
     (async () => {
       // 1. Greeting (with live product count).
       let greeting;
@@ -145,32 +164,35 @@ export default function App() {
           text: "👋 Hi! I'm your shopping assistant — but I can't reach the store right now.",
         };
       }
-      // 2. Register this session (idempotent) + refresh the chat list.
-      authFetch("/sessions", {
-        method: "POST",
-        body: JSON.stringify({ session_id: sessionId }),
-      })
-        .then(refreshSessions)
-        .catch(() => {});
-      // 3. Restore prior conversation from MongoDB (for the current session).
-      try {
-        const data = await authFetch(`/allmessage?session_id=${sessionId}`).then((r) => r.json());
-        const history = (data.messages || []).map((m) => ({
-          role: m.role === "assistant" ? "bot" : "user",
-          text: m.content,
-        }));
-        setMessages([greeting, ...history]);
-      } catch {
+      // 2 & 3. Sessions list + history are JWT-only; a guest just gets the greeting.
+      if (token) {
+        authFetch("/sessions", {
+          method: "POST",
+          body: JSON.stringify({ session_id: sessionId }),
+        })
+          .then(refreshSessions)
+          .catch(() => {});
+        try {
+          const data = await authFetch(`/allmessage?session_id=${sessionId}`).then((r) => r.json());
+          const history = (data.messages || []).map((m) => ({
+            role: m.role === "assistant" ? "bot" : "user",
+            text: m.content,
+          }));
+          setMessages([greeting, ...history]);
+        } catch {
+          setMessages([greeting]);
+        }
+      } else {
         setMessages([greeting]);
       }
-      // 4. Cart.
+      // 4. Cart (guest cart via X-Guest-Id, or the customer cart via JWT).
       authFetch("/cart")
         .then((r) => r.json())
         .then(setCart)
         .catch(() => {});
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [token, sessionId]);
+  }, [token, guestId, sessionId]);
 
   useEffect(() => {
     const el = logRef.current;
@@ -237,10 +259,58 @@ export default function App() {
   // Lock a resolved picker so its buttons can't be re-triggered from history.
   const markDone = (idx) => setMessages((m) => m.map((msg, i) => (i === idx ? { ...msg, done: true } : msg)));
 
-  // Step 1 — open the in-chat checkout: show the saved-address picker.
+  // Step 0 (guests only) — checkout requires a real account: show the login step.
   async function startCheckout() {
     if (loading || pending) return;
     setCartOpen(false);
+    if (!token && !checkoutTokenRef.current) {
+      setPending("login");
+      bot({ kind: "loginForm", text: "Great! To personalise your order, please enter your email address — or continue as a guest 👋" });
+      return;
+    }
+    showAddressPicker();
+  }
+
+  // Guest signed in at checkout: authenticate (existing users only), merge the
+  // guest cart into their customer cart, then continue to the address picker.
+  async function checkoutLogin({ email, password }, idx) {
+    setLoading(true);
+    try {
+      const res = await fetch(`${API_BASE}/auth/login`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email, password }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        bot({ text: data.detail || "Sign in failed. Please try again." });
+        return; // leave the login form up (pending stays "login") to retry
+      }
+      markDone(idx);
+      // Hold the token in the ref (not `token` state) so we don't reload the chat.
+      checkoutTokenRef.current = data.token;
+      setUsername(data.username);
+      user(`Signed in as ${data.username} ✅`);
+      try {
+        const merged = await fetch(`${API_BASE}/cart/merge`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json",
+                     Authorization: `Bearer ${data.token}`, "X-Guest-Id": guestId },
+        }).then((r) => r.json());
+        if (merged.cart) setCart(merged.cart);
+      } catch {
+        /* merge is best-effort; the customer cart is still usable */
+      }
+      showAddressPicker();
+    } catch {
+      bot({ text: "Can't reach the server. Is the backend running?" });
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  // Step 1 — show the saved-address picker (authFetch now carries the checkout token).
+  async function showAddressPicker() {
     setPending("address");
     let addresses = [];
     try {
@@ -336,7 +406,9 @@ export default function App() {
     }
   }
 
-  if (!token) return <Auth onAuth={onAuth} />;
+  if (!token && !guestId) return <Auth onAuth={onAuth} onGuest={startGuest} />;
+
+  const isGuest = !token; // browsing anonymously (a checkout token may be held in the ref)
 
   const showChips = messages.length <= 1 && !loading;
 
@@ -360,10 +432,12 @@ export default function App() {
                   ? "Live"
                   : "connecting…"}
           </div>
-          <button className="cartbtn" onClick={() => setSessionsOpen(true)} aria-label="Show chats">
-            <span className="cartbtn__icon" aria-hidden="true">☰</span>
-            Chats
-          </button>
+          {!isGuest && (
+            <button className="cartbtn" onClick={() => setSessionsOpen(true)} aria-label="Show chats">
+              <span className="cartbtn__icon" aria-hidden="true">☰</span>
+              Chats
+            </button>
+          )}
           <button className="cartbtn" onClick={newChat} disabled={loading} aria-label="Start a new chat">
             <span className="cartbtn__icon" aria-hidden="true">✎</span>
             New chat
@@ -373,19 +447,26 @@ export default function App() {
             Cart
             {cart.items_qty > 0 && <span className="cartbtn__badge">{cart.items_qty}</span>}
           </button>
-          <div className="usermenu">
-            <button className="userbtn" aria-label="Account menu">
-              {username?.[0]?.toUpperCase() || "?"}
+          {isGuest ? (
+            <button className="cartbtn" onClick={logout} aria-label="Sign in">
+              <span className="cartbtn__icon" aria-hidden="true">👤</span>
+              Sign in
             </button>
-            <div className="usermenu__pop">
-              <div className="usermenu__name">
-                Signed in as <b>{username}</b>
-              </div>
-              <button className="usermenu__logout" onClick={logout}>
-                ↩ Log out
+          ) : (
+            <div className="usermenu">
+              <button className="userbtn" aria-label="Account menu">
+                {username?.[0]?.toUpperCase() || "?"}
               </button>
+              <div className="usermenu__pop">
+                <div className="usermenu__name">
+                  Signed in as <b>{username}</b>
+                </div>
+                <button className="usermenu__logout" onClick={logout}>
+                  ↩ Log out
+                </button>
+              </div>
             </div>
-          </div>
+          )}
         </div>
         </div>
       </header>
@@ -409,6 +490,7 @@ export default function App() {
               onAddNew={openAddressForm}
               onSubmitAddress={addAddress}
               onChoosePayment={choosePayment}
+              onCheckoutLogin={checkoutLogin}
             />
           ))}
           {loading && (
@@ -578,7 +660,7 @@ function CartPanel({ cart, open, onClose, onRemove, onCheckout }) {
 function Message({
   role, text, products, order, kind, addresses, methods, total, done, idx,
   onAdd, authFetch, cartAdded, onContinue, onCheckout, onShopAgain,
-  onChooseAddress, onAddNew, onSubmitAddress, onChoosePayment,
+  onChooseAddress, onAddNew, onSubmitAddress, onChoosePayment, onCheckoutLogin,
 }) {
   return (
     <div className={`row row--${role}`}>
@@ -599,6 +681,9 @@ function Message({
             )}
             {kind === "addressForm" && (
               <AddressForm done={done} onSubmit={(f) => onSubmitAddress(f, idx)} />
+            )}
+            {kind === "loginForm" && (
+              <CheckoutLogin done={done} onSubmit={(c) => onCheckoutLogin(c, idx)} />
             )}
             {order && <OrderCard order={order} authFetch={authFetch} onShopAgain={onShopAgain} />}
             {cartAdded && (
@@ -813,6 +898,38 @@ function AddressForm({ done, onSubmit }) {
       <input className="auth__input" placeholder="Region / Governorate" value={form.region} onChange={set("region")} />
       <input className="auth__input" placeholder="Postcode" value={form.postcode} onChange={set("postcode")} required />
       <button className="cart__checkout" type="submit">Save address</button>
+    </form>
+  );
+}
+
+// In-chat checkout step 0 (guests): sign in to an existing account before checkout.
+// "Continue as Guest" is disabled on this store (Magento guest checkout is off),
+// so it just shows a coming-soon note; email+password still runs the real flow.
+function CheckoutLogin({ done, onSubmit }) {
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [guestSoon, setGuestSoon] = useState(false);
+  if (done) return null;
+  return (
+    <form
+      className="cform"
+      onSubmit={(e) => { e.preventDefault(); onSubmit({ email, password }); }}
+    >
+      <input className="auth__input" type="email" placeholder="Enter your email address…"
+             value={email} onChange={(e) => setEmail(e.target.value)} required />
+      <input className="auth__input" type="password" placeholder="Password"
+             value={password} onChange={(e) => setPassword(e.target.value)} required />
+      <button className="cart__checkout" type="submit" disabled={!email || !password}>
+        Continue →
+      </button>
+      <button type="button" className="auth__toggle" onClick={() => setGuestSoon(true)}>
+        👤 Continue as Guest (no login)
+      </button>
+      {guestSoon && (
+        <div className="auth__hint">
+          🚧 Guest checkout is coming soon — please enter your email &amp; password to continue.
+        </div>
+      )}
     </form>
   );
 }

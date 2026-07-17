@@ -85,3 +85,30 @@ def fetch_images_by_sku(skus: list[str]) -> dict[str, str | None]:
     except Exception:
         return {}
     return {p["sku"]: _image_url(p.get("media_gallery_entries")) for p in (data.get("items") or [])}
+
+
+def fetch_products_by_sku(skus: list[str]) -> dict[str, dict]:
+    """Return {sku: {name, price, image}} for the given SKUs (one REST call).
+    Admin-token read — no customer token needed. Used to enrich the guest cart."""
+    if not skus:
+        return {}
+    params = {
+        "searchCriteria[filterGroups][0][filters][0][field]": "sku",
+        "searchCriteria[filterGroups][0][filters][0][value]": ",".join(skus),
+        "searchCriteria[filterGroups][0][filters][0][conditionType]": "in",
+        "searchCriteria[pageSize]": str(len(skus)),
+        "fields": "items[sku,name,price,media_gallery_entries[file,types]]",
+    }
+    url = _API + "/products?" + urllib.parse.urlencode(params)
+    try:
+        data = _get_json(url, 30)
+    except Exception:
+        return {}
+    return {
+        p["sku"]: {
+            "name": p.get("name"),
+            "price": p.get("price"),
+            "image": _image_url(p.get("media_gallery_entries")),
+        }
+        for p in (data.get("items") or [])
+    }

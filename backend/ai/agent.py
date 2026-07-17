@@ -16,6 +16,7 @@ from langgraph.checkpoint.memory import InMemorySaver
 
 from ai.runtime import runtime
 from commerce import cart as cartmod
+from commerce import guest_cart
 from commerce import magento_token
 from core import config
 from core.log import logger
@@ -25,25 +26,31 @@ from prompts.system import SYSTEM_PROMPT
 @dataclass
 class UserContext:
     username: str
+    guest: bool = False
+
+
+def _cart(ctx: "UserContext"):
+    """Guests have no Magento token → their cart lives app-side (guest_cart)."""
+    return guest_cart if ctx.guest else cartmod
 
 
 @tool
 def add_to_cart(sku: str, runtime: ToolRuntime[UserContext], qty: int = 1) -> str:
     """Add a product to the shopping cart by its exact SKU (use a specific
     variant SKU like 'S-1001-Black', not a parent)."""
-    return json.dumps(cartmod.add_item(runtime.context.username, sku, qty))
+    return json.dumps(_cart(runtime.context).add_item(runtime.context.username, sku, qty))
 
 
 @tool
 def view_cart(runtime: ToolRuntime[UserContext]) -> str:
     """Show the customer's current shopping cart and total."""
-    return json.dumps(cartmod.view(runtime.context.username))
+    return json.dumps(_cart(runtime.context).view(runtime.context.username))
 
 
 @tool
-def remove_from_cart(item_id: int, runtime: ToolRuntime[UserContext]) -> str:
-    """Remove a line item from the cart by its item_id."""
-    return json.dumps(cartmod.remove_item(runtime.context.username, item_id))
+def remove_from_cart(item_id: int | str, runtime: ToolRuntime[UserContext]) -> str:
+    """Remove a line item from the cart by its item_id (for a guest cart, the sku)."""
+    return json.dumps(_cart(runtime.context).remove_item(runtime.context.username, item_id))
 
 
 @tool

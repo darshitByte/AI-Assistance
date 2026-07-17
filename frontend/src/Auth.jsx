@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { API_BASE } from "./config";
 
-export default function Auth({ onAuth }) {
+export default function Auth({ onAuth, onGuest }) {
   const [mode, setMode] = useState("login");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -34,6 +34,15 @@ export default function Auth({ onAuth }) {
   return (
     <div className="auth">
       <div className="auth__grain" aria-hidden="true" />
+      {onGuest && (
+        <button
+          className="auth__toggle"
+          onClick={onGuest}
+          style={{ position: "absolute", top: 20, right: 24, width: "auto" }}
+        >
+          Continue to chat →
+        </button>
+      )}
       <div className="auth__card">
         <div className="auth__brand">
           <span aria-hidden="true">🧺</span> Grocerzy

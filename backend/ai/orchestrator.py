@@ -11,6 +11,7 @@ from functools import cache
 
 from ai.agent import UserContext, ensure_fresh_mcp, get_agent
 from commerce import cart as cartmod
+from commerce import guest_cart
 from commerce.magento import fetch_images_by_sku
 from core import config
 
@@ -32,8 +33,9 @@ SEARCH_TOOLS = {"search_products", "advanced_product_search",
 MAX_CARDS = 8
 
 
-async def run_turn(username: str, user_message: str, session_id: str) -> dict:
-    """Run one turn for a user's chat session. Returns {reply, products, cart}."""
+async def run_turn(username: str, user_message: str, session_id: str, guest: bool = False) -> dict:
+    """Run one turn for a user's chat session. Returns {reply, products, cart}.
+    Guests have no Magento token, so their cart lives app-side (guest_cart)."""
     await ensure_fresh_mcp()  # re-mint the Magento token + respawn MCP if expired
     agent = await get_agent()
     collected: dict[str, dict] = {}
@@ -51,7 +53,7 @@ async def run_turn(username: str, user_message: str, session_id: str) -> dict:
         {"messages": [{"role": "user", "content": user_message}]},
         # thread_id scopes the checkpointer's history: per user, per chat session.
         config=run_config,
-        context=UserContext(username=username),
+        context=UserContext(username=username, guest=guest),
         stream_mode="updates",
     ):
         for payload in update.values():
@@ -64,7 +66,7 @@ async def run_turn(username: str, user_message: str, session_id: str) -> dict:
                 elif mtype == "ai" and msg.content and not getattr(msg, "tool_calls", None):
                     reply = _text(msg.content).strip()
 
-    cart = await asyncio.to_thread(cartmod.view, username)
+    cart = await asyncio.to_thread((guest_cart if guest else cartmod).view, username)
     return {"reply": reply, "products": await _enrich(collected),
             "cart": cart, "cart_added": cart_added}
 

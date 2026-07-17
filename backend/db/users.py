@@ -37,9 +37,15 @@ def verify(email: str, password: str) -> bool:
 
 
 def add_order(username: str, order_id: int) -> None:
+    # upsert: a customer who logged in (vs. signed up here) may have no app-side doc
+    # yet — without this the order isn't recorded and owns_order() 403s the invoice.
+    name = username.strip()
     users.update_one(
-        {"username": username.strip()},
-        {"$addToSet": {"orders": order_id}, "$set": {"updated_at": _now()}},
+        {"username": name},
+        {"$addToSet": {"orders": order_id},
+         "$setOnInsert": {"username": name, "created_at": _now()},
+         "$set": {"updated_at": _now()}},
+        upsert=True,
     )
 
 

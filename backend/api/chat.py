@@ -6,7 +6,7 @@ from pydantic import BaseModel
 
 from ai.orchestrator import run_turn
 from ai.title import generate_session_name
-from api.deps import current_user
+from api.deps import current_user, identity
 from core.log import logger
 from db import messages as messages_store
 from db import sessions as sessions_store
@@ -34,11 +34,12 @@ class ChatResponse(BaseModel):
 
 
 @router.post("/chat", response_model=ChatResponse)
-async def chat(req: ChatRequest, user: str = Depends(current_user)):
+async def chat(req: ChatRequest, ident: tuple[str, bool] = Depends(identity)):
+    user, guest = ident  # guest → app-side cart, no Magento token
     session = req.session_id or user  # fall back to user key if no session sent
-    logger.info("CHAT user=%s session=%s msg=%r", user, session, req.message)
+    logger.info("CHAT user=%s guest=%s session=%s msg=%r", user, guest, session, req.message)
     first = not await asyncio.to_thread(messages_store.has_messages, user, session)
-    result = await run_turn(user, req.message, session)
+    result = await run_turn(user, req.message, session, guest)
     await asyncio.to_thread(messages_store.save_message, user, session, "user", req.message)
     await asyncio.to_thread(messages_store.save_message, user, session, "assistant", result["reply"])
     # Name the chat from its first message; otherwise just bump it to the top.
