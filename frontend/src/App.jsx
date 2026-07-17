@@ -153,9 +153,8 @@ function useSpeech(onText, onSilence) {
 }
 
 const SUGGESTIONS = [
-  { emoji: "🎧", text: "Show me some Sony headphones" },
   { emoji: "🥛", text: "What milk do you have?" },
-  { emoji: "💰", text: "Find earbuds under 20" },
+  { emoji: "🥥", text: "Show me the coconut" },
 ];
 
 const money = (n) => `${CURRENCY} ${Number(n || 0).toLocaleString()}`;
