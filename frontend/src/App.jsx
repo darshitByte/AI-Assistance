@@ -4,8 +4,6 @@ import remarkGfm from "remark-gfm";
 import Auth from "./Auth";
 import { API_BASE, CURRENCY } from "./config";
 
-const SILENCE_MS = 3000; // ponytail: auto-send after this much silence; one-line tweak
-
 // Flatten markdown reply text to something that reads naturally aloud.
 // ponytail: regex strip, not a markdown parser — the reply set is simple prose + bullets.
 function speakable(md) {
@@ -28,7 +26,7 @@ function speakable(md) {
 function useTTS() {
   const supported = typeof window !== "undefined" && "speechSynthesis" in window;
   const [enabled, setEnabled] = useState(
-    () => supported && localStorage.getItem("tts") === "on"
+    () => supported && localStorage.getItem("tts") !== "off"
   );
 
   const cancel = useCallback(() => {
@@ -63,10 +61,11 @@ function useTTS() {
 }
 
 // Speech-to-text via the browser-native Web Speech API (Chrome/Edge; localhost or HTTPS).
-// ponytail: native platform feature, no dependency. onText receives the live transcript;
-// onSilence fires when the user goes quiet for SILENCE_MS (auto-send). Tapping the mic to
-// stop cancels the pending auto-send and leaves the text for manual editing.
-function useSpeech(onText, onSilence) {
+// ponytail: native platform feature, no dependency. onText receives the live transcript.
+// start() begins a session; stop() ends it — the caller decides (via its own ✓/✕ UI)
+// whether to keep the transcript. Chrome ends recognition on silence, so onend restarts
+// it while `activeRef` is set, keeping the bar live until the user confirms/cancels.
+function useSpeech(onText) {
   const Recognition =
     typeof window !== "undefined" &&
     (window.SpeechRecognition || window.webkitSpeechRecognition);
@@ -75,81 +74,145 @@ function useSpeech(onText, onSilence) {
   const [listening, setListening] = useState(false);
   const [error, setError] = useState("");
   const recRef = useRef(null);
-  const timerRef = useRef(null);
-  const spokeRef = useRef(false); // did this session recognize any speech?
-  const manualRef = useRef(false); // did the user tap the mic to cancel?
+  const activeRef = useRef(false); // user still wants to record?
+  const committedRef = useRef(""); // transcript from prior (auto-restarted) sessions
   const onTextRef = useRef(onText);
-  onTextRef.current = onText; // keep latest callbacks without re-creating recognition
-  const onSilenceRef = useRef(onSilence);
-  onSilenceRef.current = onSilence;
+  onTextRef.current = onText; // keep latest callback without re-creating recognition
 
-  const clearTimer = () => {
-    if (timerRef.current) {
-      clearTimeout(timerRef.current);
-      timerRef.current = null;
-    }
-  };
-
-  const toggle = useCallback(() => {
-    if (!supported) return;
-    if (recRef.current) {
-      manualRef.current = true; // tap = cancel: onend will skip the auto-send
-      clearTimer();
-      recRef.current.stop(); // fires onend → resets listening
-      return;
-    }
+  const start = useCallback(() => {
+    if (!supported || recRef.current) return;
+    activeRef.current = true;
+    committedRef.current = "";
     const rec = new Recognition();
     rec.lang = "en-US";
     rec.interimResults = true;
-    rec.continuous = true; // stay on; the silence timer ends it after SILENCE_MS
+    rec.continuous = true;
     rec.onresult = (e) => {
       let transcript = "";
-      for (let i = 0; i < e.results.length; i++) {
-        transcript += e.results[i][0].transcript; // full session transcript (continuous)
-      }
-      spokeRef.current = true;
-      onTextRef.current(transcript);
-      // Restart the silence countdown on every recognized word; firing it just
-      // stops recognition — onend is the single place that decides to auto-send.
-      clearTimer();
-      timerRef.current = setTimeout(() => {
-        timerRef.current = null;
-        recRef.current?.stop();
-      }, SILENCE_MS);
+      for (let i = 0; i < e.results.length; i++) transcript += e.results[i][0].transcript;
+      onTextRef.current(committedRef.current + transcript);
     };
     rec.onerror = (e) => {
-      setError(
-        e.error === "not-allowed" || e.error === "service-not-allowed"
-          ? "Microphone unavailable — check browser permissions."
-          : ""
-      );
+      if (e.error === "not-allowed" || e.error === "service-not-allowed")
+        setError("Microphone unavailable — check browser permissions.");
     };
     rec.onend = () => {
-      clearTimer();
-      recRef.current = null;
-      setListening(false);
-      // Auto-send when speech was recognized and the user didn't cancel — whether
-      // the session ended via our silence timer or Chrome closed it on its own.
-      if (spokeRef.current && !manualRef.current) onSilenceRef.current();
+      // Preserve this session's text, then restart if the user is still recording
+      // (Chrome closes on silence). Guard by identity: stop() may have already
+      // cleared recRef (or started a new session) — a stale onend must not touch it.
+      const finals = Array.from(rec.results || [])
+        .filter((r) => r.isFinal)
+        .map((r) => r[0].transcript)
+        .join("");
+      committedRef.current += finals;
+      if (activeRef.current && recRef.current === rec) {
+        try {
+          rec.start();
+          return;
+        } catch {
+          /* start races the end event; fall through to stopped */
+        }
+      }
+      if (recRef.current === rec) {
+        recRef.current = null;
+        setListening(false);
+      }
     };
     recRef.current = rec;
-    spokeRef.current = false;
-    manualRef.current = false;
     setError("");
     setListening(true);
     rec.start();
   }, [supported, Recognition]);
 
-  // Stop recognition + timer if the component unmounts mid-listen.
-  useEffect(
-    () => () => {
-      clearTimer();
-      recRef.current?.stop();
-    },
-    []
-  );
+  const stop = useCallback(() => {
+    // Clear recRef NOW so the next start() is never blocked, even if onend is
+    // slow or never fires again on an already-ended recognition.
+    activeRef.current = false;
+    const rec = recRef.current;
+    recRef.current = null;
+    setListening(false);
+    try {
+      rec?.stop();
+    } catch {
+      /* already ended */
+    }
+  }, []);
 
-  return { supported, listening, error, toggle };
+  // Stop recognition if the component unmounts mid-listen.
+  useEffect(() => () => stop(), [stop]);
+
+  return { supported, listening, error, start, stop };
+}
+
+// Live mic-level waveform. Web Audio AnalyserNode reads real amplitude; each frame
+// pushes a new sample to the right and scrolls the rest left. Bars sit at a thin
+// baseline ("dots") when quiet and grow with your voice. Writes bar heights straight
+// to the DOM (no React state) to stay smooth. Mic denied → stays a flat baseline.
+// Also drives auto-send: once the user has spoken, SILENCE_MS of quiet fires onSilence.
+const WAVE_BARS = 56;
+const SILENCE_MS = 3000; // auto-send after this much silence following speech
+const VOICE_LEVEL = 0.08; // RMS level counted as "speaking"
+function VoiceWave({ onSilence }) {
+  const ref = useRef(null);
+  const onSilenceRef = useRef(onSilence);
+  onSilenceRef.current = onSilence;
+  useEffect(() => {
+    let raf, ctx, stream, stopped = false;
+    const levels = new Array(WAVE_BARS).fill(0);
+    (async () => {
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        ctx = new (window.AudioContext || window.webkitAudioContext)();
+        if (ctx.state === "suspended") await ctx.resume();
+        const analyser = ctx.createAnalyser();
+        analyser.fftSize = 512;
+        ctx.createMediaStreamSource(stream).connect(analyser);
+        const data = new Uint8Array(analyser.fftSize);
+        const spans = ref.current ? Array.from(ref.current.children) : [];
+        let last = 0, spoke = false, lastVoice = 0;
+        const tick = (t) => {
+          if (stopped) return;
+          raf = requestAnimationFrame(tick);
+          if (t - last < 160) return; // ~6 fps: one new sample per bar-scroll step
+          last = t;
+          analyser.getByteTimeDomainData(data);
+          let sum = 0;
+          for (let i = 0; i < data.length; i++) {
+            const v = (data[i] - 128) / 128;
+            sum += v * v;
+          }
+          const level = Math.min(1, Math.sqrt(sum / data.length) * 3.5); // RMS + gain
+          levels.push(level);
+          levels.shift(); // newest at the right, scroll left
+          for (let i = 0; i < spans.length; i++) {
+            spans[i].style.height = 10 + levels[i] * 90 + "%";
+            spans[i].style.opacity = 0.35 + levels[i] * 0.65;
+          }
+          if (level > VOICE_LEVEL) { spoke = true; lastVoice = t; }
+          else if (spoke && t - lastVoice > SILENCE_MS) {
+            stopped = true; // fire once; App tears this component down
+            onSilenceRef.current?.();
+          }
+        };
+        raf = requestAnimationFrame(tick);
+      } catch {
+        /* mic unavailable/denied — bars stay at the flat baseline, no auto-send */
+      }
+    })();
+    return () => {
+      stopped = true;
+      cancelAnimationFrame(raf);
+      stream?.getTracks().forEach((tr) => tr.stop());
+      ctx?.close();
+    };
+  }, []);
+  return (
+    <div className="voicebar__wave" ref={ref} aria-label="Listening">
+      {Array.from({ length: WAVE_BARS }).map((_, i) => (
+        <span key={i} />
+      ))}
+    </div>
+  );
 }
 
 const SUGGESTIONS = [
@@ -213,18 +276,41 @@ export default function App() {
   const [cart, setCart] = useState(EMPTY_CART);
   const [cartOpen, setCartOpen] = useState(false);
   const [pending, setPending] = useState(null); // null | "address" | "payment": in-chat checkout step gating the composer
-  // Voice input: append recognized speech to whatever's in the composer.
-  // The utterance's live/interim text replaces itself; committed text stays.
+  // Voice input: recording bar (waveform + ✕/✓) replaces the composer while active.
+  // Live transcript appends after whatever was already typed; confirm keeps it in the
+  // field (brief "loading" beat first), cancel restores the pre-recording text.
+  const [voice, setVoice] = useState("off"); // off | rec | loading
   const speechBaseRef = useRef("");
-  const inputRef = useRef(""); // latest input, read by the silence-timer auto-send
-  const speech = useSpeech(
-    (transcript) => setInput((speechBaseRef.current + transcript).trimStart()),
-    () => {
-      const text = inputRef.current.trim();
-      if (text && !pending) send(text); // 4s of silence → auto-send; skip empty / checkout
-    }
+  const speech = useSpeech((transcript) =>
+    setInput((speechBaseRef.current + transcript).trimStart())
   );
-  inputRef.current = input; // mirror latest input for the auto-send callback
+  const inputRef = useRef(""); // latest input, read by the silence auto-send
+  inputRef.current = input;
+  const abortRef = useRef(null); // in-flight /chat request, aborted by the stop button
+  const startVoice = () => {
+    speechBaseRef.current = input ? input.replace(/\s*$/, "") + " " : "";
+    setVoice("rec");
+    speech.start();
+  };
+  const cancelVoice = () => {
+    speech.stop();
+    setInput(speechBaseRef.current.trimEnd()); // discard the transcript
+    setVoice("off");
+  };
+  const confirmVoice = () => {
+    speech.stop();
+    setVoice("loading"); // transcript is already in the field; brief transcribing beat
+    setTimeout(() => {
+      setVoice("off");
+      document.querySelector(".composer__input")?.focus();
+    }, 600);
+  };
+  // 4s of silence after the user has spoken → stop and send the transcript automatically.
+  const silentSend = () => {
+    speech.stop();
+    setVoice("off");
+    if (!pending) send(inputRef.current); // send() trims + guards empty
+  };
   const tts = useTTS();
   // Auto-speak only newly-appended live bot replies — never restored history,
   // session switches, resets, or in-place edits (all resync the count silently).
@@ -391,10 +477,13 @@ export default function App() {
     setMessages((m) => [...m, { role: "user", text: message }]);
     setInput("");
     setLoading(true);
+    const ctrl = new AbortController();
+    abortRef.current = ctrl;
     try {
       const res = await authFetch("/chat", {
         method: "POST",
         body: JSON.stringify({ message, session_id: sessionId }),
+        signal: ctrl.signal,
       });
       const data = await res.json();
       setMessages((m) => [
@@ -403,15 +492,18 @@ export default function App() {
       ]);
       if (data.cart) setCart(data.cart);
       refreshSessions(); // first message may have just AI-named this chat
-    } catch {
+    } catch (e) {
+      if (e.name === "AbortError") return; // user hit stop — leave the chat as-is
       setMessages((m) => [
         ...m,
         { role: "bot", text: "I couldn't reach the shop right now. Is the backend running?" },
       ]);
     } finally {
+      abortRef.current = null;
       setLoading(false);
     }
   }
+  const stopGenerating = () => abortRef.current?.abort();
 
   async function addToCart(sku, qty = 1, name) {
     try {
@@ -720,37 +812,74 @@ export default function App() {
           send(input);
         }}
       >
-        <div className="composer__field">
-          <input
-            className="composer__input"
-            value={input}
-            onChange={(e) => setInput(e.target.value)}
-            placeholder={pending ? "Use the buttons above to continue…" : "Ask for a product…"}
-            disabled={!!pending}
-            autoFocus
-          />
-          {speech.supported && (
+        {voice === "off" ? (
+          <>
+            <div className="composer__field">
+              <input
+                className="composer__input"
+                value={input}
+                onChange={(e) => setInput(e.target.value)}
+                placeholder={pending ? "Use the buttons above to continue…" : "Ask for a product…"}
+                disabled={!!pending}
+                autoFocus
+              />
+              {speech.supported && (
+                <button
+                  type="button"
+                  className="composer__mic"
+                  onClick={startVoice}
+                  disabled={!!pending}
+                  aria-label="Start voice input"
+                  title={speech.error || "Start voice input"}
+                >
+                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                    <rect x="9" y="2" width="6" height="12" rx="3" />
+                    <path d="M5 10v1a7 7 0 0 0 14 0v-1" />
+                    <line x1="12" y1="18" x2="12" y2="22" />
+                  </svg>
+                </button>
+              )}
+            </div>
+            {loading ? (
+              <button
+                type="button"
+                className="composer__send composer__send--stop"
+                onClick={stopGenerating}
+                aria-label="Stop generating"
+                title="Stop"
+              >
+                <span className="composer__stopicon" aria-hidden="true" />
+              </button>
+            ) : (
+              <button className="composer__send" type="submit" disabled={!!pending || !input.trim()}>
+                Send
+              </button>
+            )}
+          </>
+        ) : (
+          <div className="voicebar">
+            <VoiceWave onSilence={silentSend} />
             <button
               type="button"
-              className={`composer__mic${speech.listening ? " composer__mic--on" : ""}`}
-              onClick={() => {
-                if (!speech.listening) {
-                  // Snapshot current text so the transcript appends after it (with a space).
-                  speechBaseRef.current = input ? input.replace(/\s*$/, "") + " " : "";
-                }
-                speech.toggle();
-              }}
-              disabled={!!pending}
-              aria-label={speech.listening ? "Stop voice input" : "Start voice input"}
-              title={speech.error || (speech.listening ? "Stop voice input" : "Start voice input")}
+              className="voicebar__btn voicebar__btn--cancel"
+              onClick={cancelVoice}
+              aria-label="Cancel voice input"
+              title="Cancel"
             >
-              {speech.listening ? "⏺" : "🎤"}
+              ✕
             </button>
-          )}
-        </div>
-        <button className="composer__send" type="submit" disabled={loading || !!pending || !input.trim()}>
-          {loading ? "…" : "Send"}
-        </button>
+            <button
+              type="button"
+              className="voicebar__btn voicebar__btn--confirm"
+              onClick={confirmVoice}
+              disabled={voice === "loading"}
+              aria-label="Use transcript"
+              title="Done"
+            >
+              {voice === "loading" ? <span className="voicebar__spin" aria-label="Transcribing" /> : "✓"}
+            </button>
+          </div>
+        )}
       </form>
 
       <CartPanel

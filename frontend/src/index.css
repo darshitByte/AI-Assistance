@@ -567,6 +567,20 @@ body {
   cursor: default;
 }
 
+.composer__send--stop {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--ink);
+}
+
+.composer__stopicon {
+  width: 14px;
+  height: 14px;
+  border-radius: 3px;
+  background: #fff;
+}
+
 .composer__mic {
   position: absolute;
   top: 50%;
@@ -598,20 +612,84 @@ body {
   cursor: default;
 }
 
-.composer__mic--on {
-  background: #e5484d;
-  color: #fff;
-  animation: mic-pulse 1.2s ease-in-out infinite;
+/* ---------- voice recording bar (replaces composer while recording) ---------- */
+.voicebar {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px 8px 18px;
+  border-radius: 14px;
+  border: 1px solid var(--border);
+  background: var(--paper);
 }
 
-.composer__mic--on:hover:not(:disabled) {
-  background: #e5484d;
-  color: #fff;
+.voicebar__wave {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  height: 34px;
+  overflow: hidden;
 }
 
-@keyframes mic-pulse {
-  0%, 100% { box-shadow: 0 0 0 0 rgba(229, 72, 77, 0.5); }
-  50% { box-shadow: 0 0 0 6px rgba(229, 72, 77, 0); }
+.voicebar__wave span {
+  flex: none;
+  width: 3px;
+  height: 10%; /* baseline "dots"; JS grows this with live mic level */
+  border-radius: 2px;
+  background: var(--leaf-bright);
+  opacity: 0.35;
+}
+
+.voicebar__spin {
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  border: 2px solid rgba(255, 255, 255, 0.4);
+  border-top-color: #fff;
+  animation: voice-spin 0.6s linear infinite;
+}
+
+@keyframes voice-spin {
+  to { transform: rotate(360deg); }
+}
+
+.voicebar__btn {
+  flex: none;
+  width: 38px;
+  height: 38px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  border-radius: 999px;
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+  transition: filter 0.15s ease, transform 0.12s ease;
+}
+
+.voicebar__btn:hover:not(:disabled) {
+  transform: translateY(-1px);
+  filter: brightness(1.05);
+}
+
+.voicebar__btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.voicebar__btn--cancel {
+  background: var(--border);
+  color: var(--ink);
+}
+
+.voicebar__btn--confirm {
+  background: var(--citrus);
+  color: #fff;
 }
 
 /* ---------- post-add next-step buttons ---------- */
@@ -736,6 +814,7 @@ body {
   font-family: var(--display);
   font-weight: 700;
   font-size: 14px;
+  white-space: nowrap;
   cursor: pointer;
   transition: border-color 0.15s ease, transform 0.12s ease;
 }
