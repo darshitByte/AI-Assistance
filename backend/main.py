@@ -22,7 +22,7 @@ from db import users
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     mcp = MCPClient(config.MCP_COMMAND, config.MCP_ARGS, magento_token.mcp_env())
-    await mcp.connect()
+    await mcp.start()
     runtime.mcp = mcp
     users.seed_admin()
     logger.info("startup complete: %d MCP tools, model=%s", len(mcp.tool_names()), config.LLM_MODEL)

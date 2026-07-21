@@ -155,6 +155,7 @@ async def ensure_fresh_mcp() -> None:
     """Before a turn: if the admin token is stale, re-mint it, respawn the MCP
     server with the new token, and force an agent rebuild."""
     if magento_token.is_stale():
+        logger.info("Magento admin token stale — refreshing MCP connection")
         magento_token.get_token(force=True)
         await runtime.mcp.reconnect(magento_token.mcp_env())
         reset_agent()
