@@ -9,7 +9,7 @@ import asyncio
 import json
 from functools import cache
 
-from ai.agent import UserContext, ensure_fresh_mcp, get_agent
+from ai.agent import UserContext, get_agent
 from commerce import cart as cartmod
 from commerce import guest_cart
 from commerce.magento import fetch_images_by_sku
@@ -36,7 +36,6 @@ MAX_CARDS = 8
 async def run_turn(username: str, user_message: str, session_id: str, guest: bool = False) -> dict:
     """Run one turn for a user's chat session. Returns {reply, products, cart}.
     Guests have no Magento token, so their cart lives app-side (guest_cart)."""
-    await ensure_fresh_mcp()  # re-mint the Magento token + respawn MCP if expired
     agent = await get_agent()
     collected: dict[str, dict] = {}
     suggestions: list[str] = []  # tappable choices the agent offered (suggest_options)

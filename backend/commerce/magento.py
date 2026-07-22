@@ -3,7 +3,6 @@
 The store is behind Cloudflare, which 403s requests without a browser User-Agent.
 """
 import json
-import urllib.error
 import urllib.parse
 import urllib.request
 
@@ -24,18 +23,11 @@ def _headers() -> dict:
 
 
 def _request(method: str, url: str, body: dict | None, timeout: int):
-    """Admin-token request → parsed JSON; on 401 (expired token) re-mint once and retry."""
+    """Admin-token request → parsed JSON (permanent Integration token)."""
     data = json.dumps(body).encode() if body is not None else None
-    for attempt in (1, 2):
-        req = urllib.request.Request(url, data=data, headers=_headers(), method=method)
-        try:
-            with urllib.request.urlopen(req, timeout=timeout) as r:
-                return json.load(r)
-        except urllib.error.HTTPError as e:
-            if e.code == 401 and attempt == 1:
-                magento_token.get_token(force=True)
-                continue
-            raise
+    req = urllib.request.Request(url, data=data, headers=_headers(), method=method)
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        return json.load(r)
 
 
 def _get_json(url: str, timeout: int):

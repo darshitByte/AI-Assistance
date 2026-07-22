@@ -17,7 +17,6 @@ from langgraph.checkpoint.memory import InMemorySaver
 from ai.runtime import runtime
 from commerce import cart as cartmod
 from commerce import guest_cart
-from commerce import magento_token
 from core import config
 from core.log import logger
 from prompts.system import SYSTEM_PROMPT
@@ -142,23 +141,6 @@ def _resilient(t):
 
 
 _agent = None
-
-
-def reset_agent() -> None:
-    """Drop the cached agent so the next get_agent() rebuilds against a fresh MCP
-    session (its tools are bound to whatever session existed at build time)."""
-    global _agent
-    _agent = None
-
-
-async def ensure_fresh_mcp() -> None:
-    """Before a turn: if the admin token is stale, re-mint it, respawn the MCP
-    server with the new token, and force an agent rebuild."""
-    if magento_token.is_stale():
-        logger.info("Magento admin token stale — refreshing MCP connection")
-        magento_token.get_token(force=True)
-        await runtime.mcp.reconnect(magento_token.mcp_env())
-        reset_agent()
 
 
 async def get_agent():
