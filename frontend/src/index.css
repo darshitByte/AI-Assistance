@@ -1008,6 +1008,42 @@ body {
   color: var(--leaf);
 }
 
+.cart__head-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.cart__sync {
+  border: 1px solid var(--border);
+  background: transparent;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  color: var(--leaf);
+  padding: 5px 10px;
+  border-radius: 999px;
+}
+
+.cart__sync:hover:not(:disabled) {
+  background: #8881;
+}
+
+.cart__sync:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.cart__note {
+  margin: 0;
+  padding: 8px 18px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--leaf);
+  background: #2e7d3211;
+  border-bottom: 1px solid var(--border);
+}
+
 .cart__close {
   border: 0;
   background: transparent;

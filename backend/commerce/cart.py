@@ -76,7 +76,7 @@ def view(username: str) -> dict:
     try:
         cart = _call(username, "GET", "/carts/mine")
         totals = _call(username, "GET", "/carts/mine/totals")
-    except urllib.error.HTTPError:
+    except (urllib.error.URLError, TimeoutError):  # HTTP error, connection refused/DNS, read timeout
         return empty()
     items = cart.get("items", [])
     images = fetch_images_by_sku([it["sku"] for it in items]) if items else {}

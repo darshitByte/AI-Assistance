@@ -257,6 +257,28 @@ const payIcon = (code = "") => {
 
 const MAX_PW_ATTEMPTS = 3; // wrong-password tries at checkout before we fall back to guest
 
+// Full chat transcript (cards + checkout + order card included) is snapshotted to
+// localStorage per session so a page refresh restores exactly what was on screen.
+const chatKey = (sid) => `chat:${sid}`;
+function restoreSnapshot(sid, greeting) {
+  try {
+    const saved = JSON.parse(localStorage.getItem(chatKey(sid)) || "null");
+    if (!Array.isArray(saved) || saved.length <= 1) return null; // nothing beyond the greeting
+    return [greeting, ...saved.slice(1)]; // fresh greeting (live product count) + snapshotted turns
+  } catch {
+    return null;
+  }
+}
+
+// Which composer-gating `pending` state a still-open checkout card corresponds to.
+// Used to resume a mid-checkout refresh: the picker restores live (JWT-backed calls
+// still work), and this re-gates the composer so the flow behaves as if uninterrupted.
+const PENDING_BY_KIND = { emailForm: "email", passwordForm: "login", addressPicker: "address", addressForm: "address", addressConfirm: "address", paymentPicker: "payment" };
+function pendingFromMessages(msgs) {
+  const last = [...msgs].reverse().find((m) => m.role === "bot" && m.kind);
+  return last && !last.done ? PENDING_BY_KIND[last.kind] || null : null;
+}
+
 export default function App() {
   const [token, setToken] = useState(() => localStorage.getItem("token") || "");
   const [guestId, setGuestId] = useState(() => localStorage.getItem("guest_id") || "");
@@ -264,7 +286,9 @@ export default function App() {
   // Token obtained at the checkout login while browsing as a guest. Held in a ref
   // (not `token` state) so becoming authed mid-chat doesn't retrigger the load
   // effect and wipe the in-progress checkout. authFetch prefers it over the guest id.
-  const checkoutTokenRef = useRef("");
+  // Persisted to localStorage so a refresh mid-checkout keeps the authed identity —
+  // otherwise the app reverts to guest, whose cart was already emptied by the merge.
+  const checkoutTokenRef = useRef(localStorage.getItem("checkout_token") || "");
   const [sessionId, setSessionId] = useState(() => {
     let s = localStorage.getItem("session_id");
     if (!s) {
@@ -294,6 +318,7 @@ export default function App() {
   const inputRef = useRef(""); // latest input, read by the silence auto-send
   inputRef.current = input;
   const abortRef = useRef(null); // in-flight /chat request, aborted by the stop button
+  const hydratedRef = useRef(null); // session whose messages are loaded; gates the snapshot save
   const startVoice = () => {
     speechBaseRef.current = input ? input.replace(/\s*$/, "") + " " : "";
     setVoice("rec");
@@ -370,6 +395,7 @@ export default function App() {
     localStorage.setItem("token", t);
     localStorage.setItem("username", u);
     localStorage.removeItem("guest_id"); // becoming a real user ends any guest session
+    localStorage.removeItem("checkout_token");
     checkoutTokenRef.current = "";
     setGuestId("");
     newSession(); // fresh chat per login (also isolates a new user on a shared browser)
@@ -381,15 +407,19 @@ export default function App() {
   function startGuest() {
     const g = crypto.randomUUID();
     localStorage.setItem("guest_id", g);
+    localStorage.removeItem("checkout_token"); // a fresh guest carries no prior checkout auth
+    checkoutTokenRef.current = "";
     newSession();
     setGuestId(g);
   }
 
   function logout() {
+    Object.keys(localStorage).filter((k) => k.startsWith("chat:")).forEach((k) => localStorage.removeItem(k));
     localStorage.removeItem("token");
     localStorage.removeItem("username");
     localStorage.removeItem("guest_id");
     localStorage.removeItem("session_id");
+    localStorage.removeItem("checkout_token");
     checkoutTokenRef.current = "";
     setToken("");
     setGuestId("");
@@ -417,6 +447,7 @@ export default function App() {
   function deleteChat(id) {
     if (loading) return;
     setSessions((ss) => ss.filter((s) => s.session_id !== id)); // optimistic
+    localStorage.removeItem(chatKey(id)); // drop its transcript snapshot too
     authFetch(`/sessions/${id}`, { method: "DELETE" }).catch(refreshSessions);
     if (id === sessionId) newSession(); // deleted the open chat → start a fresh one
   }
@@ -424,6 +455,7 @@ export default function App() {
   useEffect(() => {
     if (!token && !guestId) return;
     (async () => {
+      hydratedRef.current = null; // pause snapshot saves until this session's messages are loaded
       // 1. Greeting (with live product count).
       let greeting;
       try {
@@ -443,7 +475,7 @@ export default function App() {
           text: "👋 Hi! I'm your shopping assistant — but I can't reach the store right now.",
         };
       }
-      // 2 & 3. Sessions list + history are JWT-only; a guest just gets the greeting.
+      // 2. Register the session in the JWT-only sidebar list.
       if (token) {
         authFetch("/sessions", {
           method: "POST",
@@ -451,6 +483,14 @@ export default function App() {
         })
           .then(refreshSessions)
           .catch(() => {});
+      }
+      // 3. Restore history. A localStorage snapshot (full cards + checkout) wins; else
+      // fall back to Mongo /allmessage (JWT-only, text-only); else just the greeting.
+      const snapshot = restoreSnapshot(sessionId, greeting);
+      if (snapshot) {
+        setMessages(snapshot);
+        setPending(pendingFromMessages(snapshot)); // resume a mid-checkout refresh (re-gate composer)
+      } else if (token) {
         try {
           const data = await authFetch(`/allmessage?session_id=${sessionId}`).then((r) => r.json());
           const history = (data.messages || []).map((m) => ({
@@ -464,6 +504,7 @@ export default function App() {
       } else {
         setMessages([greeting]);
       }
+      hydratedRef.current = sessionId; // messages now belong to this session → saves may resume
       // 4. Cart (guest cart via X-Guest-Id, or the customer cart via JWT).
       authFetch("/cart")
         .then((r) => r.json())
@@ -472,6 +513,17 @@ export default function App() {
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [token, guestId, sessionId]);
+
+  // Snapshot the live transcript per session. Gated on hydratedRef so a session
+  // switch (sessionId changed, messages not yet reloaded) can't clobber the new key.
+  useEffect(() => {
+    if (hydratedRef.current !== sessionId || !messages.length) return;
+    try {
+      localStorage.setItem(chatKey(sessionId), JSON.stringify(messages));
+    } catch {
+      /* quota/serialization — snapshot is best-effort */
+    }
+  }, [messages, sessionId]);
 
   useEffect(() => {
     const el = logRef.current;
@@ -623,8 +675,10 @@ export default function App() {
         }
         return;
       }
-      // Hold the token in the ref (not `token` state) so we don't reload the chat.
+      // Hold the token in the ref (not `token` state) so we don't reload the chat;
+      // persist it so a refresh mid-checkout keeps this authed identity (& cart).
       checkoutTokenRef.current = data.token;
+      localStorage.setItem("checkout_token", data.token);
       setUsername(data.username);
       user(`Signed in as ${data.username} ✅`);
       try {
@@ -657,6 +711,13 @@ export default function App() {
     bot({ kind: "addressPicker", addresses, text: "Where should we deliver your order? 📦" });
   }
 
+  // Saved address picked: lock the list and ask the user to confirm before quoting
+  // (mirrors the guest review step). "Change" on the confirm card re-lists the addresses.
+  function selectSavedAddress(addr, idx) {
+    markDone(idx);
+    bot({ kind: "addressConfirm", addr, saved: true, text: "📍 Please confirm your delivery address:" });
+  }
+
   // Guest checkout: review the full address + email before quoting. The payment card
   // only echoes the city ("Delivering to: MH"), so confirm the whole thing first.
   function confirmAddress(form, idx) {
@@ -664,13 +725,16 @@ export default function App() {
     bot({ kind: "addressConfirm", addr: form, text: "Please review your delivery details:" });
   }
 
-  // "Change" on the confirm card: re-open the form prefilled so the next submit overwrites.
-  function editAddress(addr, idx) {
+  // "Change" on the confirm card. Saved-address (customer) → re-show the saved list;
+  // guest → re-open the form prefilled so the next submit overwrites.
+  function editAddress(addr, idx, saved) {
     markDone(idx);
+    if (saved) { showAddressPicker(); return; }
     bot({ kind: "addressForm", guest: true, email: addr.email, initial: addr, text: "Update your delivery details:" });
   }
 
-  // Step 2 — address chosen: quote shipping, then show the payment picker.
+  // Step 2 — address confirmed: quote shipping, then show the payment picker. Locks the
+  // confirm card that triggered it (guest review card or customer saved-address confirm).
   async function chooseAddress(addr, idx) {
     markDone(idx);
     user(`Deliver to: ${addrLine(addr)} ${addrIcon(addr.label)}`);
@@ -734,12 +798,24 @@ export default function App() {
         return;
       }
       setCart(EMPTY_CART);
+      // Order placed → lock every checkout picker so the address can't be re-quoted
+      // against the now-empty cart.
+      setMessages((m) => m.map((msg) =>
+        (msg.kind === "addressPicker" || msg.kind === "paymentPicker") ? { ...msg, done: true } : msg));
       bot({ text: "", order: data, speakText: orderSpeech(data) });
     } catch {
       bot({ text: "Order failed. Please try again." });
     } finally {
       setLoading(false);
     }
+  }
+
+  // Re-pull the cart from the store (customer /carts/mine, or the guest cart) — lets the
+  // user reconcile the panel with items they changed on the Magento site directly.
+  async function syncCart() {
+    const data = await authFetch("/cart").then((r) => r.json());
+    setCart(data);
+    return data;
   }
 
   async function removeFromCart(itemId) {
@@ -847,7 +923,7 @@ export default function App() {
               onContinue={() => replyToAction("What else would you like to add? 🛍️")}
               onCheckout={startCheckout}
               onShopAgain={() => { setCartOpen(false); newChat(); }}
-              onChooseAddress={chooseAddress}
+              onChooseAddress={selectSavedAddress}
               onAddNew={openAddressForm}
               onSubmitAddress={(f, idx) => (!token && !checkoutTokenRef.current ? confirmAddress(f, idx) : addAddress(f, idx))}
               onConfirmAddress={chooseAddress}
@@ -964,6 +1040,7 @@ export default function App() {
         onClose={() => setCartOpen(false)}
         onRemove={removeFromCart}
         onCheckout={startCheckout}
+        onSync={syncCart}
       />
 
       <SessionsPanel
@@ -1023,15 +1100,37 @@ function SessionsPanel({ sessions, activeId, open, onClose, onPick, onNew, onDel
   );
 }
 
-function CartPanel({ cart, open, onClose, onRemove, onCheckout }) {
+function CartPanel({ cart, open, onClose, onRemove, onCheckout, onSync }) {
+  const [syncing, setSyncing] = useState(false);
+  const [note, setNote] = useState("");
+  async function handleSync() {
+    setSyncing(true);
+    try {
+      const data = await onSync();
+      const n = data?.items_qty ?? 0;
+      setNote(`✓ ${n} item${n === 1 ? "" : "s"} retrieved successfully`);
+      setTimeout(() => setNote(""), 3000);
+    } catch {
+      setNote("Couldn't sync your cart. Try again.");
+      setTimeout(() => setNote(""), 3000);
+    } finally {
+      setSyncing(false);
+    }
+  }
   return (
     <>
       <div className={`overlay ${open ? "overlay--on" : ""}`} onClick={onClose} />
       <aside className={`cart ${open ? "cart--open" : ""}`} aria-hidden={!open}>
         <div className="cart__head">
           <h2 className="cart__title">Your cart</h2>
-          <button className="cart__close" onClick={onClose} aria-label="Close cart">✕</button>
+          <div className="cart__head-actions">
+            <button className="cart__sync" onClick={handleSync} disabled={syncing}>
+              {syncing ? "Syncing…" : "⟳ Sync cart"}
+            </button>
+            <button className="cart__close" onClick={onClose} aria-label="Close cart">✕</button>
+          </div>
         </div>
+        {note && <p className="cart__note" role="status">{note}</p>}
 
         {cart.items.length === 0 ? (
           <div className="cart__empty">
@@ -1081,7 +1180,7 @@ function CartPanel({ cart, open, onClose, onRemove, onCheckout }) {
 }
 
 function Message({
-  role, text, products, suggestions, order, kind, addresses, methods, total, done, idx, email, addr, initial,
+  role, text, products, suggestions, order, kind, addresses, methods, total, done, idx, email, addr, initial, saved,
   onAdd, onSelect, authFetch, cartAdded, onContinue, onCheckout, onShopAgain,
   onChooseAddress, onAddNew, onSubmitAddress, onConfirmAddress, onEditAddress, onChoosePayment, onCheckEmail, onGuestCheckout, onCheckoutLogin, canInvoice,
 }) {
@@ -1107,7 +1206,7 @@ function Message({
             )}
             {kind === "addressConfirm" && (
               <AddressConfirm addr={addr} done={done}
-                onConfirm={() => onConfirmAddress(addr, idx)} onEdit={() => onEditAddress(addr, idx)} />
+                onConfirm={() => onConfirmAddress(addr, idx)} onEdit={() => onEditAddress(addr, idx, saved)} />
             )}
             {kind === "emailForm" && (
               <CheckoutEmail done={done} onSubmit={(e) => onCheckEmail(e, idx)} onGuest={(e) => onGuestCheckout(e, idx)} />
@@ -1353,7 +1452,7 @@ function AddressConfirm({ addr, done, onConfirm, onEdit }) {
       <div className="confirm__lines">
         <div><strong>{addr.name}</strong></div>
         <div>📍 {where}</div>
-        <div>📧 {addr.email}</div>
+        {addr.email && <div>📧 {addr.email}</div>}
         {addr.phone && <div>📞 {addr.phone}</div>}
       </div>
       <p className="confirm__ask">Is this correct?</p>
