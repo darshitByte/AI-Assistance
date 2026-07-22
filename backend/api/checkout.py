@@ -4,9 +4,10 @@ import asyncio
 from fastapi import APIRouter, Depends, HTTPException, Response
 from pydantic import BaseModel
 
-from api.deps import current_user
+from api.deps import current_user, identity
 from commerce import address as address_book
 from commerce import checkout as checkoutmod
+from commerce import guest_checkout
 from core.log import logger
 from db import users as users_db
 
@@ -30,8 +31,11 @@ class PlaceRequest(BaseModel):
 
 
 @router.get("/addresses")
-async def saved_addresses(user: str = Depends(current_user)):
-    """The customer's saved delivery addresses (from their Magento account)."""
+async def saved_addresses(ident: tuple[str, bool] = Depends(identity)):
+    """The customer's saved delivery addresses. Guests have none (they enter one inline)."""
+    user, guest = ident
+    if guest:
+        return []
     return await asyncio.to_thread(address_book.get_addresses, user)
 
 
@@ -42,15 +46,19 @@ async def add_address(req: AddressRequest, user: str = Depends(current_user)):
 
 
 @router.post("/quote")
-async def quote(req: AddressRequest, user: str = Depends(current_user)):
-    logger.info("CHECKOUT quote user=%s city=%s", user, req.city)
-    return await asyncio.to_thread(checkoutmod.quote, user, req.model_dump())
+async def quote(req: AddressRequest, ident: tuple[str, bool] = Depends(identity)):
+    user, guest = ident
+    logger.info("CHECKOUT quote user=%s guest=%s city=%s", user, guest, req.city)
+    mod = guest_checkout if guest else checkoutmod
+    return await asyncio.to_thread(mod.quote, user, req.model_dump())
 
 
 @router.post("/place")
-async def place(req: PlaceRequest, user: str = Depends(current_user)):
-    logger.info("CHECKOUT place user=%s method=%s", user, req.payment_method_code)
-    return await asyncio.to_thread(checkoutmod.place, user, req.payment_method_code)
+async def place(req: PlaceRequest, ident: tuple[str, bool] = Depends(identity)):
+    user, guest = ident
+    logger.info("CHECKOUT place user=%s guest=%s method=%s", user, guest, req.payment_method_code)
+    mod = guest_checkout if guest else checkoutmod
+    return await asyncio.to_thread(mod.place, user, req.payment_method_code)
 
 
 @router.get("/invoice/{order_id}")

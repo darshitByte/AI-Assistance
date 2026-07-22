@@ -79,6 +79,18 @@ def create(email: str, password: str) -> None:
     remember_password(email, password)
 
 
+def email_exists(email: str) -> bool:
+    """Is this email a registered Magento customer? Uses the anonymous isEmailAvailable
+    endpoint, which returns true when the email is *available* (i.e. NOT registered)."""
+    try:
+        available = _post("/customers/isEmailAvailable", {"customerEmail": email.strip()})
+        return not bool(available)
+    except urllib.error.HTTPError:
+        # ponytail: can't tell → assume it exists so we ask for a password; the checkout's
+        # 3-try limit still falls back to guest if they don't have one.
+        return True
+
+
 def authenticate(email: str, password: str) -> str:
     """Login path: verify creds by minting a token, cache password + token. Raises CustomerError."""
     tok = _mint(email, password)

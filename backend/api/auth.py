@@ -20,6 +20,17 @@ class AuthResponse(BaseModel):
     username: str   # = the email; kept as `username` so the frontend/cart/chat keys are unchanged
 
 
+class EmailRequest(BaseModel):
+    email: str
+
+
+@router.post("/check-email")
+async def check_email(req: EmailRequest):
+    """Email-first checkout: does this email belong to a Magento customer? If not, the
+    frontend routes the user to guest checkout instead of asking for a password."""
+    return {"exists": customer.email_exists(req.email)}
+
+
 @router.post("/signup", response_model=AuthResponse)
 async def signup(req: AuthRequest):
     email = req.email.strip()

@@ -700,6 +700,18 @@ body {
   margin-top: 10px;
 }
 
+.confirm__lines {
+  display: grid;
+  gap: 4px;
+  margin: 6px 0 10px;
+  line-height: 1.4;
+}
+
+.confirm__ask {
+  margin: 0;
+  font-weight: 600;
+}
+
 .msg-actions__btn {
   padding: 8px 14px;
   border-radius: 999px;

@@ -243,6 +243,9 @@ const addrIcon = (label = "") => {
   if (l.includes("office") || l.includes("work")) return "🏢";
   return "📍";
 };
+// One-line address for the echo/payment card: full street→postcode for guests,
+// falling back to the saved-address label/city for logged-in customers.
+const addrLine = (a) => [a.street, a.city, a.region, a.postcode].filter(Boolean).join(", ") || a.label || a.city || "";
 const payIcon = (code = "") => {
   const c = code.toLowerCase();
   if (c.includes("cash") || c.includes("cod")) return "💵";
@@ -251,6 +254,8 @@ const payIcon = (code = "") => {
   if (c.includes("paypal")) return "🅿️";
   return "💳";
 };
+
+const MAX_PW_ATTEMPTS = 3; // wrong-password tries at checkout before we fall back to guest
 
 export default function App() {
   const [token, setToken] = useState(() => localStorage.getItem("token") || "");
@@ -275,7 +280,9 @@ export default function App() {
   const [productCount, setProductCount] = useState(null);
   const [cart, setCart] = useState(EMPTY_CART);
   const [cartOpen, setCartOpen] = useState(false);
-  const [pending, setPending] = useState(null); // null | "address" | "payment": in-chat checkout step gating the composer
+  const [pending, setPending] = useState(null); // null | "email" | "login" | "address" | "payment": in-chat checkout step gating the composer
+  const [checkoutEmail, setCheckoutEmail] = useState(""); // email captured at the email-first checkout step
+  const pwAttemptsRef = useRef(0); // wrong-password tries at checkout; MAX_PW_ATTEMPTS → fall back to guest
   // Voice input: recording bar (waveform + ✕/✓) replaces the composer while active.
   // Live transcript appends after whatever was already typed; confirm keeps it in the
   // field (brief "loading" beat first), cancel restores the pre-recording text.
@@ -537,21 +544,65 @@ export default function App() {
   // Lock a resolved picker so its buttons can't be re-triggered from history.
   const markDone = (idx) => setMessages((m) => m.map((msg, i) => (i === idx ? { ...msg, done: true } : msg)));
 
-  // Step 0 (guests only) — checkout requires a real account: show the login step.
+  // Step 0 (guests only) — email-first: ask for the email, then branch on whether it's
+  // a known account (→ password) or not (→ guest checkout).
   async function startCheckout() {
     if (loading || pending) return;
     setCartOpen(false);
     if (!token && !checkoutTokenRef.current) {
-      setPending("login");
-      bot({ kind: "loginForm", text: "Great! To personalise your order, please enter your email address — or continue as a guest 👋" });
+      pwAttemptsRef.current = 0;
+      setPending("email");
+      bot({ kind: "emailForm", text: "Great! What email should we use for your order? 👋" });
       return;
     }
     showAddressPicker();
   }
 
-  // Guest signed in at checkout: authenticate (existing users only), merge the
-  // guest cart into their customer cart, then continue to the address picker.
-  async function checkoutLogin({ email, password }, idx) {
+  // Email entered: does this email belong to an account? Known → ask for the password;
+  // unknown → continue as a guest (real guest order).
+  async function checkEmail(email, idx) {
+    markDone(idx);
+    setCheckoutEmail(email);
+    setLoading(true);
+    try {
+      const { exists } = await fetch(`${API_BASE}/auth/check-email`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email }),
+      }).then((r) => r.json());
+      if (exists) {
+        setPending("login");
+        bot({ kind: "passwordForm", email, text: `Welcome back! Enter the password for **${email}** — or continue as a guest.` });
+      } else {
+        bot({ text: `No account found for **${email}** — continuing as a guest 👍` });
+        startGuestAddress(email);
+      }
+    } catch {
+      bot({ text: "Can't reach the server. Is the backend running?" });
+      setPending(null);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  // Guest checkout: skip the saved-address picker (guests have none) and collect one
+  // address inline. authFetch carries X-Guest-Id, so /checkout/quote|place hit the guest path.
+  function startGuestAddress(email) {
+    setPending("address");
+    bot({ kind: "addressForm", guest: true, email, text: "Where should we deliver your order? 📦" });
+  }
+
+  // "Continue as guest" tapped on the email/password card: skip auth, go straight to guest checkout.
+  function guestCheckout(email, idx) {
+    markDone(idx);
+    startGuestAddress(email || checkoutEmail);
+  }
+
+  // Password entered for a known account: authenticate, merge the guest cart, continue.
+  // Wrong password → retry (with a guest escape) up to MAX_PW_ATTEMPTS, then force guest.
+  async function checkoutLogin({ password }, idx) {
+    markDone(idx);
+    const email = checkoutEmail;
     setLoading(true);
     try {
       const res = await fetch(`${API_BASE}/auth/login`, {
@@ -561,10 +612,17 @@ export default function App() {
       });
       const data = await res.json();
       if (!res.ok) {
-        bot({ text: data.detail || "Sign in failed. Please try again." });
-        return; // leave the login form up (pending stays "login") to retry
+        pwAttemptsRef.current += 1;
+        if (pwAttemptsRef.current >= MAX_PW_ATTEMPTS) {
+          bot({ text: "That didn't match. Continuing as a guest so you can still check out 👍" });
+          startGuestAddress(email);
+        } else {
+          const left = MAX_PW_ATTEMPTS - pwAttemptsRef.current;
+          setPending("login");
+          bot({ kind: "passwordForm", email, text: `That password didn't match — ${left} ${left === 1 ? "try" : "tries"} left. Try again, or continue as a guest.` });
+        }
+        return;
       }
-      markDone(idx);
       // Hold the token in the ref (not `token` state) so we don't reload the chat.
       checkoutTokenRef.current = data.token;
       setUsername(data.username);
@@ -599,10 +657,23 @@ export default function App() {
     bot({ kind: "addressPicker", addresses, text: "Where should we deliver your order? 📦" });
   }
 
+  // Guest checkout: review the full address + email before quoting. The payment card
+  // only echoes the city ("Delivering to: MH"), so confirm the whole thing first.
+  function confirmAddress(form, idx) {
+    markDone(idx);
+    bot({ kind: "addressConfirm", addr: form, text: "Please review your delivery details:" });
+  }
+
+  // "Change" on the confirm card: re-open the form prefilled so the next submit overwrites.
+  function editAddress(addr, idx) {
+    markDone(idx);
+    bot({ kind: "addressForm", guest: true, email: addr.email, initial: addr, text: "Update your delivery details:" });
+  }
+
   // Step 2 — address chosen: quote shipping, then show the payment picker.
   async function chooseAddress(addr, idx) {
     markDone(idx);
-    user(`Deliver to: ${addr.label || addr.city} ${addrIcon(addr.label)}`);
+    user(`Deliver to: ${addrLine(addr)} ${addrIcon(addr.label)}`);
     setLoading(true);
     try {
       const data = await authFetch("/checkout/quote", { method: "POST", body: JSON.stringify(addr) }).then((r) => r.json());
@@ -616,7 +687,7 @@ export default function App() {
         kind: "paymentPicker",
         methods: data.payment_methods || [],
         total: data.totals?.grand_total ?? null,
-        text: `📍 Delivering to: **${addr.label || addr.city}**\n\nHow would you like to pay?`,
+        text: `📍 Delivering to: **${addrLine(addr)}**\n\nHow would you like to pay?`,
       });
     } catch {
       bot({ text: "Something went wrong getting shipping options." });
@@ -778,9 +849,14 @@ export default function App() {
               onShopAgain={() => { setCartOpen(false); newChat(); }}
               onChooseAddress={chooseAddress}
               onAddNew={openAddressForm}
-              onSubmitAddress={addAddress}
+              onSubmitAddress={(f, idx) => (!token && !checkoutTokenRef.current ? confirmAddress(f, idx) : addAddress(f, idx))}
+              onConfirmAddress={chooseAddress}
+              onEditAddress={editAddress}
               onChoosePayment={choosePayment}
+              onCheckEmail={checkEmail}
+              onGuestCheckout={guestCheckout}
               onCheckoutLogin={checkoutLogin}
+              canInvoice={!!(token || checkoutTokenRef.current)}
             />
           ))}
           {loading && (
@@ -1005,9 +1081,9 @@ function CartPanel({ cart, open, onClose, onRemove, onCheckout }) {
 }
 
 function Message({
-  role, text, products, suggestions, order, kind, addresses, methods, total, done, idx,
+  role, text, products, suggestions, order, kind, addresses, methods, total, done, idx, email, addr, initial,
   onAdd, onSelect, authFetch, cartAdded, onContinue, onCheckout, onShopAgain,
-  onChooseAddress, onAddNew, onSubmitAddress, onChoosePayment, onCheckoutLogin,
+  onChooseAddress, onAddNew, onSubmitAddress, onConfirmAddress, onEditAddress, onChoosePayment, onCheckEmail, onGuestCheckout, onCheckoutLogin, canInvoice,
 }) {
   return (
     <div className={`row row--${role}`}>
@@ -1027,12 +1103,19 @@ function Message({
               <PaymentPicker methods={methods} total={total} done={done} onChoose={(mth) => onChoosePayment(mth, idx)} />
             )}
             {kind === "addressForm" && (
-              <AddressForm done={done} onSubmit={(f) => onSubmitAddress(f, idx)} />
+              <AddressForm done={done} email={email} initial={initial} onSubmit={(f) => onSubmitAddress(f, idx)} />
             )}
-            {kind === "loginForm" && (
-              <CheckoutLogin done={done} onSubmit={(c) => onCheckoutLogin(c, idx)} />
+            {kind === "addressConfirm" && (
+              <AddressConfirm addr={addr} done={done}
+                onConfirm={() => onConfirmAddress(addr, idx)} onEdit={() => onEditAddress(addr, idx)} />
             )}
-            {order && <OrderCard order={order} authFetch={authFetch} onShopAgain={onShopAgain} />}
+            {kind === "emailForm" && (
+              <CheckoutEmail done={done} onSubmit={(e) => onCheckEmail(e, idx)} onGuest={(e) => onGuestCheckout(e, idx)} />
+            )}
+            {kind === "passwordForm" && (
+              <CheckoutPassword done={done} email={email} onSubmit={(c) => onCheckoutLogin(c, idx)} onGuest={() => onGuestCheckout(email, idx)} />
+            )}
+            {order && <OrderCard order={order} authFetch={authFetch} onShopAgain={onShopAgain} canInvoice={canInvoice} />}
             {cartAdded && (
               <div className="msg-actions">
                 <button className="msg-actions__btn" onClick={onContinue}>
@@ -1146,7 +1229,7 @@ function ProductCard({ product, onAdd }) {
   );
 }
 
-function OrderCard({ order, authFetch, onShopAgain }) {
+function OrderCard({ order, authFetch, onShopAgain, canInvoice = true }) {
   const [busy, setBusy] = useState(false);
 
   async function viewInvoice() {
@@ -1188,9 +1271,11 @@ function OrderCard({ order, authFetch, onShopAgain }) {
       <p className="order__meta">🧾 Invoice emailed to your registered email</p>
 
       <div className="order__actions">
-        <button className="order__btn order__btn--primary" onClick={viewInvoice} disabled={busy}>
-          {busy ? "…" : "👁 View Invoice"}
-        </button>
+        {canInvoice && (
+          <button className="order__btn order__btn--primary" onClick={viewInvoice} disabled={busy}>
+            {busy ? "…" : "👁 View Invoice"}
+          </button>
+        )}
         <button className="order__btn" onClick={onShopAgain}>🛍️ Shop Again</button>
       </div>
     </div>
@@ -1240,8 +1325,9 @@ function PaymentPicker({ methods = [], total, done, onChoose }) {
 }
 
 // Inline "Add New Address" form; collapses once submitted (parent marks it done).
-function AddressForm({ done, onSubmit }) {
-  const [form, setForm] = useState(EMPTY_FORM);
+// `email` prefills the field for guests, who already gave it at the email step.
+function AddressForm({ done, email, initial, onSubmit }) {
+  const [form, setForm] = useState(() => ({ ...EMPTY_FORM, ...(initial || {}), email: (initial?.email ?? email) || "" }));
   const set = (k) => (e) => setForm((f) => ({ ...f, [k]: e.target.value }));
   if (done) return null;
   return (
@@ -1258,34 +1344,58 @@ function AddressForm({ done, onSubmit }) {
   );
 }
 
-// In-chat checkout step 0 (guests): sign in to an existing account before checkout.
-// "Continue as Guest" is disabled on this store (Magento guest checkout is off),
-// so it just shows a coming-soon note; email+password still runs the real flow.
-function CheckoutLogin({ done, onSubmit }) {
+// Guest checkout: full delivery summary + confirm/change, shown before we quote shipping.
+function AddressConfirm({ addr, done, onConfirm, onEdit }) {
+  if (done) return null;
+  const where = [addr.street, addr.city, addr.region, addr.postcode].filter(Boolean).join(", ");
+  return (
+    <div className="confirm">
+      <div className="confirm__lines">
+        <div><strong>{addr.name}</strong></div>
+        <div>📍 {where}</div>
+        <div>📧 {addr.email}</div>
+        {addr.phone && <div>📞 {addr.phone}</div>}
+      </div>
+      <p className="confirm__ask">Is this correct?</p>
+      <div className="msg-actions">
+        <button className="msg-actions__btn msg-actions__btn--primary" onClick={onConfirm}>✓ Yes, continue</button>
+        <button className="msg-actions__btn" onClick={onEdit}>✏️ Change</button>
+      </div>
+    </div>
+  );
+}
+
+// In-chat checkout step 0a: email only. Parent looks it up → known email asks for a
+// password (CheckoutPassword), unknown email goes straight to guest checkout.
+function CheckoutEmail({ done, onSubmit, onGuest }) {
   const [email, setEmail] = useState("");
-  const [password, setPassword] = useState("");
-  const [guestSoon, setGuestSoon] = useState(false);
   if (done) return null;
   return (
-    <form
-      className="cform"
-      onSubmit={(e) => { e.preventDefault(); onSubmit({ email, password }); }}
-    >
+    <form className="cform" onSubmit={(e) => { e.preventDefault(); onSubmit(email.trim()); }}>
       <input className="auth__input" type="email" placeholder="Enter your email address…"
              value={email} onChange={(e) => setEmail(e.target.value)} required />
-      <input className="auth__input" type="password" placeholder="Password"
+      <button className="cart__checkout" type="submit" disabled={!email}>Continue →</button>
+      <button type="button" className="auth__toggle" onClick={() => onGuest(email.trim())}>
+        👤 Continue as guest
+      </button>
+    </form>
+  );
+}
+
+// In-chat checkout step 0b: password for a known account. "Continue as guest" bails to
+// the guest path (parent handles the retry limit before ever re-showing this card).
+function CheckoutPassword({ done, email, onSubmit, onGuest }) {
+  const [password, setPassword] = useState("");
+  if (done) return null;
+  return (
+    <form className="cform" onSubmit={(e) => { e.preventDefault(); onSubmit({ password }); }}>
+      <input className="auth__input" type="email" value={email || ""} readOnly tabIndex={-1} />
+      <input className="auth__input" type="password" placeholder="Password" autoFocus
              value={password} onChange={(e) => setPassword(e.target.value)} required />
-      <button className="cart__checkout" type="submit" disabled={!email || !password}>
-        Continue →
+      <button className="cart__checkout" type="submit" disabled={!password}>Continue →</button>
+      <button type="button" className="auth__toggle" onClick={onGuest}>
+        👤 Continue as guest
       </button>
-      <button type="button" className="auth__toggle" onClick={() => setGuestSoon(true)}>
-        👤 Continue as Guest (no login)
-      </button>
-      {guestSoon && (
-        <div className="auth__hint">
-          🚧 Guest checkout is coming soon — please enter your email &amp; password to continue.
-        </div>
-      )}
     </form>
   );
 }

@@ -157,6 +157,9 @@ async def get_agent():
             # gpt-oss reasons in a separate channel (not content), so no leak;
             # "low" keeps replies fast while still driving tool calls reliably.
             extra_body={"reasoning_effort": "low"},
+            # Some NVIDIA models (e.g. llama-3.1-8b) reject parallel tool calls
+            # ("only supports single tool-calls at once"); force one at a time.
+            model_kwargs={"parallel_tool_calls": False},
         )
         mcp_tools = [_resilient(t) for t in await load_mcp_tools(runtime.mcp.session)]
         tools = mcp_tools + CART_TOOLS + [browse_kinds, search_within_budget, suggest_options]
