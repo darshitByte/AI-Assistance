@@ -1436,7 +1436,7 @@ function AddressForm({ done, email, initial, onSubmit }) {
       <input className="auth__input" placeholder="Phone" value={form.phone} onChange={set("phone")} required />
       <input className="auth__input" placeholder="Street address" value={form.street} onChange={set("street")} required />
       <input className="auth__input" placeholder="City" value={form.city} onChange={set("city")} required />
-      <input className="auth__input" placeholder="Region / Governorate" value={form.region} onChange={set("region")} />
+      <input className="auth__input" placeholder="Region / Governorate" value={form.region} onChange={set("region")} required />
       <input className="auth__input" placeholder="Postcode" value={form.postcode} onChange={set("postcode")} required />
       <button className="cart__checkout" type="submit">Save address</button>
     </form>
