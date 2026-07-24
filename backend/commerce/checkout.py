@@ -145,7 +145,7 @@ def _render_pdf(summary: dict) -> bytes:
 
 
 def _delivery_estimate() -> str:
-    return (date.today() + timedelta(days=4)).strftime("%A, %-d %B")  # "Sunday, 19 July"
+    return "Grocerzy team will notify you about the delivery date & time."
 
 
 if __name__ == "__main__":  # network-free self-check

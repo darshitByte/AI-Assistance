@@ -79,6 +79,35 @@ def fetch_images_by_sku(skus: list[str]) -> dict[str, str | None]:
     return {p["sku"]: _image_url(p.get("media_gallery_entries")) for p in (data.get("items") or [])}
 
 
+_INDEX_FIELDS = ("total_count,items[id,sku,name,price,status,visibility,type_id,"
+                 "custom_attributes[attribute_code,value],"
+                 "media_gallery_entries[file,types]]")
+
+
+def fetch_all_products(page_size: int = 100) -> list[dict]:
+    """Page through the whole catalogue (admin token) for the vector index.
+    Returns raw product dicts for every product (all types, including
+    configurable parents)."""
+    out: list[dict] = []
+    page = 1
+    total = None
+    while True:
+        params = {
+            "searchCriteria[pageSize]": str(page_size),
+            "searchCriteria[currentPage]": str(page),
+            "fields": _INDEX_FIELDS,
+        }
+        data = _get_json(_API + "/products?" + urllib.parse.urlencode(params), 60)
+        items = data.get("items") or []
+        if total is None:
+            total = data.get("total_count") or 0
+        out.extend(items)
+        if not items or page * page_size >= total:
+            break
+        page += 1
+    return out
+
+
 def fetch_products_by_sku(skus: list[str]) -> dict[str, dict]:
     """Return {sku: {name, price, image}} for the given SKUs (one REST call).
     Admin-token read — no customer token needed. Used to enrich the guest cart."""

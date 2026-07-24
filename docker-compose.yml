@@ -9,6 +9,16 @@ services:
       - app_network
     restart: unless-stopped
 
+  qdrant:
+    image: qdrant/qdrant:v1.18.3   # pinned to match the qdrant-client (1.18) → no version-skew warning
+    volumes:
+      - qdrant-data:/qdrant/storage
+    ports:
+      - "10304:6333"        # REST + dashboard at http://localhost:10304/dashboard
+    networks:
+      - app_network
+    restart: unless-stopped
+
   backend:
     build:
       context: .
@@ -18,6 +28,8 @@ services:
     environment:
       # Reach the Mongo container by service name (overrides .env for Docker).
       MONGO_URL: mongodb://mongo:27017
+      # Same trick for Qdrant — reachable by service name inside app_network.
+      QDRANT_URL: http://qdrant:6333
     networks:
       - app_network
     extra_hosts:
@@ -26,6 +38,7 @@ services:
       - "10302:8000"
     depends_on:
       - mongo
+      - qdrant
     restart: unless-stopped
 
   frontend:
@@ -50,6 +63,7 @@ services:
 
 volumes:
   mongo-data:
+  qdrant-data:
 
 networks:
   app_network:

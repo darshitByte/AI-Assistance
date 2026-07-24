@@ -230,7 +230,7 @@ function orderSpeech(o) {
     items && `Items: ${items}.`,
     o.total != null && `Total paid ${money(o.total)}.`,
     o.ship_to && `Ship to ${o.ship_to}.`,
-    o.delivery_by && `Delivery by ${o.delivery_by}.`,
+    o.delivery_by && o.delivery_by,
   ]
     .filter(Boolean)
     .join(" ");
@@ -611,7 +611,7 @@ export default function App() {
   }
 
   // Email entered: does this email belong to an account? Known → ask for the password;
-  // unknown → continue as a guest (real guest order).
+  // unknown → re-prompt the email (the card's own "Continue as guest" button bails to guest).
   async function checkEmail(email, idx) {
     markDone(idx);
     setCheckoutEmail(email);
@@ -626,8 +626,8 @@ export default function App() {
         setPending("login");
         bot({ kind: "passwordForm", email, text: `Welcome back! Enter the password for **${email}** — or continue as a guest.` });
       } else {
-        bot({ text: `No account found for **${email}** — continuing as a guest 👍` });
-        startGuestAddress(email);
+        setPending("email");
+        bot({ kind: "emailForm", text: `No account found for **${email}**. Please re-enter your email, or tap “Continue as guest” below 👇` });
       }
     } catch {
       bot({ text: "Can't reach the server. Is the backend running?" });
@@ -1366,7 +1366,7 @@ function OrderCard({ order, authFetch, onShopAgain, canInvoice = true }) {
       </div>
 
       {order.ship_to && <p className="order__meta">📦 Ship to: <b>{order.ship_to}</b></p>}
-      {order.delivery_by && <p className="order__meta">🚚 Delivery by: <b>{order.delivery_by}</b></p>}
+      {order.delivery_by && <p className="order__meta">🚚 {order.delivery_by}</p>}
       <p className="order__meta">🧾 Invoice emailed to your registered email</p>
 
       <div className="order__actions">

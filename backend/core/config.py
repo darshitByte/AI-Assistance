@@ -41,6 +41,15 @@ MONGO_URL = os.getenv("MONGO_URL", "mongodb://localhost:27017")
 MONGO_DB = os.getenv("MONGO_DB", "grocerzy")
 JWT_SECRET = os.getenv("JWT_SECRET", "dev-secret-change-me")
 
+# --- Qdrant + embeddings (semantic product search) ---
+QDRANT_URL = os.getenv("QDRANT_URL", "http://localhost:10304")
+QDRANT_COLLECTION = os.getenv("QDRANT_COLLECTION_NAME", "products")
+EMBEDDING_DIMENSIONS = int(os.getenv("EMBEDDING_DIMENSIONS", "1024"))
+# Embeddings: Ollama, OpenAI-compatible /v1/embeddings. mxbai-embed-large → 1024-dim.
+EMBED_BASE_URL = os.getenv("EMBED_BASE_URL", "https://ollama.bytestechnolab.in/v1")
+EMBED_API_KEY = os.getenv("EMBED_API_KEY", "")
+EMBED_MODEL = os.getenv("EMBED_MODEL", "mxbai-embed-large:latest")
+
 # --- Server ---
 HOST = os.getenv("HOST", "127.0.0.1")
 PORT = int(os.getenv("PORT", "8000"))

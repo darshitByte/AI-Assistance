@@ -11,12 +11,13 @@ from fastapi.responses import JSONResponse
 
 from ai.mcp_client import MCPClient
 from ai.runtime import runtime
-from api import auth, cart, chat, checkout, health, session
+from api import auth, cart, chat, checkout, health, reindex, session
 from commerce import magento_token
 from commerce.customer import CustomerError
 from core import config
 from core.log import logger
 from db import users
+from vector.qdrant_client import qdrant_manager
 
 
 @asynccontextmanager
@@ -25,10 +26,15 @@ async def lifespan(app: FastAPI):
     await mcp.start()
     runtime.mcp = mcp
     users.seed_admin()
+    try:
+        await qdrant_manager.connect()
+    except Exception as e:  # noqa: BLE001 — Qdrant is additive; don't block chat if it's down
+        logger.warning("qdrant unavailable, semantic search disabled: %s", e)
     logger.info("startup complete: %d MCP tools, model=%s", len(mcp.tool_names()), config.LLM_MODEL)
     try:
         yield
     finally:
+        await qdrant_manager.disconnect()
         await mcp.close()
 
 
@@ -55,3 +61,4 @@ app.include_router(chat.router)
 app.include_router(session.router)
 app.include_router(cart.router)
 app.include_router(checkout.router)
+app.include_router(reindex.router)
